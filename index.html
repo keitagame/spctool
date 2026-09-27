@@ -298,6 +298,7 @@ footer{
     <span>サンプル数: <strong id="metaSampleCount">-</strong></span>
     <span>DIR: <strong id="metaDir">-</strong></span>
     <div class="spacer"></div>
+    <button class="btn small" id="btnPlaySpc">▶ SPC再生</button>
     <button class="btn small" id="btnReload">別のSPCを読み込む</button>
     <button class="btn primary small" id="btnExport" disabled>置き換えたSPCを書き出す</button>
   </div>
@@ -320,7 +321,7 @@ footer{
 
 <input type="file" id="wavInput" accept="audio/wav,.wav" class="hidden">
 <div id="toast" class="toast"></div>
-
+<script src="libspc.js"></script>
 <script src="spc-core.js"></script>
 <script src="spc-app.js"></script>
 </body>

@@ -8,6 +8,7 @@
   const metaFileName  = document.getElementById("metaFileName");
   const metaSampleCount = document.getElementById("metaSampleCount");
   const metaDir       = document.getElementById("metaDir");
+  const btnPlaySpc   = document.getElementById("btnPlaySpc");
   const btnReload     = document.getElementById("btnReload");
   const btnExport     = document.getElementById("btnExport");
   const listWrap      = document.getElementById("listWrap");
@@ -15,7 +16,7 @@
   const emptyState    = document.getElementById("emptyState");
   const wavInput       = document.getElementById("wavInput");
   const toastEl        = document.getElementById("toast");
-
+let isSpcPlaying = false;
   let audioCtx = null;
   function getAudioCtx() {
     if (!audioCtx) {
@@ -45,7 +46,65 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3200);
   }
+btnPlaySpc.addEventListener("click", () => toggleSpcPlay());
 
+  function toggleSpcPlay() {
+    if (typeof SPCPlayer === "undefined") {
+      showToast("libspc.js が読み込まれていません", true);
+      return;
+    }
+
+    if (isSpcPlaying) {
+      stopSpcPlayback();
+      return;
+    }
+
+    // 単体サンプルの再生が動いていれば停止
+    stopPlayback();
+
+    // 置換データがあれば反映後のSPCバッファを作成、無ければ元のバッファを使用
+    let bufferToPlay;
+    if (state.samples.some(s => s.replacement)) {
+      const newAram = new Uint8Array(state.spc.aram);
+      state.samples.forEach(s => {
+        if (s.replacement) {
+          SPC.writeBrrToAram(newAram, s.startAddr, s.replacement.brrBytes);
+        }
+      });
+      const outBytes = SPC.rebuildSpcFile(state.originalBytes, newAram);
+      bufferToPlay = outBytes.buffer;
+    } else {
+      bufferToPlay = state.originalBytes.buffer;
+    }
+
+    try {
+      const player = SPCPlayer.getInstance();
+      player.load(bufferToPlay); // パースおよびエミュレータ状態のリセット
+      player.play();
+
+      isSpcPlaying = true;
+      btnPlaySpc.textContent = "■ SPC停止";
+      btnPlaySpc.classList.add("on");
+      showToast("SPC楽曲の再生を開始しました");
+    } catch (err) {
+      console.error(err);
+      showToast("SPC再生エラー: " + err.message, true);
+    }
+  }
+
+  function stopSpcPlayback() {
+    if (isSpcPlaying) {
+      if (typeof SPCPlayer !== "undefined") {
+        try {
+          const player = SPCPlayer.getInstance();
+          player.stop();
+        } catch (e) {}
+      }
+      isSpcPlaying = false;
+      btnPlaySpc.textContent = "▶ SPC再生";
+      btnPlaySpc.classList.remove("on");
+    }
+  }
   // ---------------------------------------------------------------------
   // File loading (SPC)
   // ---------------------------------------------------------------------
@@ -68,6 +127,8 @@
   });
 
   function resetState() {
+    stopSpcPlayback();    // ★追加
+    
     stopPlayback();
     state = {
       fileName: "",
@@ -268,6 +329,7 @@ const exportWavBtn = document.createElement("button");
   function togglePlay(i, btnEl) {
     const wasPlaying = state.currentPlayingIndex === i;
     stopPlayback();
+    stopSpcPlayback();
     if (wasPlaying) return;
 
     const s = state.samples[i];
