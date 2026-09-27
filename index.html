@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SPC Sample Swapper</title>
+<style>
+:root{
+  --bg:#0e0f10;
+  --panel:#171819;
+  --panel2:#1e2021;
+  --line:#2b2d2f;
+  --text:#e9e7e1;
+  --text-dim:#8a8d8f;
+  --accent:#5ee6c0;
+  --accent-dim:#2f5a4e;
+  --warn:#e6b95e;
+  --danger:#e65e5e;
+  --mono: "JetBrains Mono", "Sarasa Mono J", "Consolas", monospace;
+  --sans: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);height:100%;}
+body{min-height:100%;}
+::selection{background:var(--accent-dim);}
+
+.app{
+  max-width:1000px;
+  margin:0 auto;
+  padding:28px 20px 80px;
+}
+
+.brand{
+  display:flex;
+  align-items:baseline;
+  gap:12px;
+  margin-bottom:4px;
+}
+.brand .mark{
+  font-family:var(--mono);
+  font-size:13px;
+  letter-spacing:0.08em;
+  color:var(--accent);
+  border:1px solid var(--accent-dim);
+  padding:3px 7px;
+  border-radius:3px;
+}
+.brand h1{
+  font-size:20px;
+  font-weight:600;
+  margin:0;
+  letter-spacing:0.01em;
+}
+.sub{
+  color:var(--text-dim);
+  font-size:13px;
+  margin:6px 0 28px;
+  line-height:1.6;
+}
+
+.dropzone{
+  border:1px dashed var(--line);
+  border-radius:8px;
+  padding:36px 20px;
+  text-align:center;
+  cursor:pointer;
+  transition:border-color .15s, background .15s;
+  background:var(--panel);
+}
+.dropzone:hover, .dropzone.drag{
+  border-color:var(--accent);
+  background:var(--panel2);
+}
+.dropzone .big{
+  font-size:15px;
+  margin-bottom:6px;
+}
+.dropzone .small{
+  font-size:12px;
+  color:var(--text-dim);
+  font-family:var(--mono);
+}
+input[type=file]{display:none;}
+
+.meta-bar{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px 20px;
+  align-items:center;
+  padding:14px 16px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:8px;
+  margin-top:18px;
+  font-family:var(--mono);
+  font-size:12px;
+  color:var(--text-dim);
+}
+.meta-bar strong{color:var(--text);font-weight:500;}
+.meta-bar .spacer{flex:1;}
+.btn{
+  appearance:none;
+  border:1px solid var(--line);
+  background:var(--panel2);
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:13px;
+  padding:8px 14px;
+  border-radius:6px;
+  cursor:pointer;
+  transition:border-color .15s,background .15s;
+}
+.btn:hover{border-color:var(--accent);}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn.primary{
+  background:var(--accent);
+  color:#0e0f10;
+  border-color:var(--accent);
+  font-weight:600;
+}
+.btn.primary:hover{filter:brightness(1.08);}
+.btn.small{padding:5px 10px;font-size:12px;}
+
+.section-title{
+  font-size:12px;
+  letter-spacing:0.04em;
+  color:var(--text-dim);
+  margin:30px 0 10px;
+  font-family:var(--mono);
+}
+
+.sample-list{
+  border:1px solid var(--line);
+  border-radius:8px;
+  overflow:hidden;
+}
+.sample-row{
+  display:grid;
+  grid-template-columns:36px 34px 1fr auto auto;
+  gap:14px;
+  align-items:center;
+  padding:12px 14px;
+  border-bottom:1px solid var(--line);
+  background:var(--panel);
+  transition:background .15s;
+}
+.sample-row:last-child{border-bottom:none;}
+.sample-row.replaced{background:#132420;}
+.sample-row.playing{background:#1a2422;}
+
+.idx{
+  font-family:var(--mono);
+  font-size:11px;
+  color:var(--text-dim);
+  text-align:right;
+}
+.info{
+  min-width:0;
+}
+.info .name{
+  font-size:13px;
+  font-weight:500;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.info .name .newname{
+  color:var(--accent);
+}
+.info .stats{
+  font-family:var(--mono);
+  font-size:11px;
+  color:var(--text-dim);
+  margin-top:3px;
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap;
+}
+.tag{
+  display:inline-block;
+  font-family:var(--mono);
+  font-size:10px;
+  padding:1px 6px;
+  border-radius:3px;
+  border:1px solid var(--line);
+  color:var(--text-dim);
+}
+.tag.loop{border-color:var(--accent-dim);color:var(--accent);}
+.tag.new{border-color:var(--warn);color:var(--warn);}
+
+.play-btn{
+  width:34px;height:34px;
+  border-radius:50%;
+  border:1px solid var(--line);
+  background:var(--panel2);
+  color:var(--text);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;
+  flex-shrink:0;
+  transition:border-color .15s;
+}
+.play-btn:hover{border-color:var(--accent);}
+.play-btn.on{border-color:var(--accent);color:var(--accent);}
+.play-btn svg{width:13px;height:13px;}
+
+.waveform{
+  width:120px;
+  height:34px;
+  flex-shrink:0;
+  border-radius:4px;
+  background:var(--panel2);
+  overflow:hidden;
+}
+.waveform canvas{width:100%;height:100%;display:block;}
+
+.row-actions{
+  display:flex;
+  gap:6px;
+  flex-shrink:0;
+}
+
+.empty-state{
+  padding:60px 20px;
+  text-align:center;
+  color:var(--text-dim);
+  font-size:13px;
+}
+
+footer{
+  margin-top:40px;
+  padding-top:18px;
+  border-top:1px solid var(--line);
+  color:var(--text-dim);
+  font-size:11px;
+  font-family:var(--mono);
+  line-height:1.7;
+}
+
+.toast{
+  position:fixed;
+  bottom:calc(24px + env(safe-area-inset-bottom,0px));
+  left:50%;
+  transform:translateX(-50%) translateY(8px);
+  background:var(--panel2);
+  border:1px solid var(--line);
+  color:var(--text);
+  padding:10px 18px;
+  border-radius:6px;
+  font-size:13px;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity .2s, transform .2s;
+  z-index:50;
+  max-width:88vw;
+  text-align:center;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+.toast.err{border-color:var(--danger);color:var(--danger);}
+
+.hidden{display:none !important;}
+
+@media (max-width:640px){
+  .sample-row{grid-template-columns:28px 30px 1fr auto;grid-template-rows:auto auto;}
+  .waveform{display:none;}
+  .row-actions{grid-column:1 / -1;justify-content:flex-end;margin-top:6px;}
+}
+
+@media (prefers-color-scheme:light){
+  :root:not([data-theme="dark"]){
+    --bg:#0e0f10; --panel:#171819; --panel2:#1e2021; --line:#2b2d2f; --text:#e9e7e1; --text-dim:#8a8d8f;
+  }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="brand">
+    <span class="mark">.spc</span>
+    <h1>Sample Swapper</h1>
+  </div>
+  <p class="sub">
+    SPCファイルに含まれるBRRサンプルをプレビューし、好きな箇所を手持ちのWAVファイルへ置き換えます。<br>
+    置き換え時は元サンプルの音程・長さに自動で合わせるので、差し替え後も違和感なく再生されます。
+  </p>
+
+  <div id="dropzone" class="dropzone">
+    <div class="big">ここに .spc ファイルをドロップ、またはクリックして選択</div>
+    <div class="small">1ファイル / 64KB以上のSPCファイル (v0.30)</div>
+    <input type="file" id="fileInput" accept=".spc">
+  </div>
+
+  <div id="metaBar" class="meta-bar hidden">
+    <span>ファイル: <strong id="metaFileName">-</strong></span>
+    <span>サンプル数: <strong id="metaSampleCount">-</strong></span>
+    <span>DIR: <strong id="metaDir">-</strong></span>
+    <div class="spacer"></div>
+    <button class="btn small" id="btnReload">別のSPCを読み込む</button>
+    <button class="btn primary small" id="btnExport" disabled>置き換えたSPCを書き出す</button>
+  </div>
+
+  <div id="listWrap" class="hidden">
+    <div class="section-title">SAMPLES</div>
+    <div class="sample-list" id="sampleList"></div>
+  </div>
+
+  <div id="emptyState" class="empty-state">
+    SPCファイルを読み込むと、ここにサンプル一覧が表示されます。
+  </div>
+
+  <footer>
+    BRR (Bit Rate Reduction) デコード・エンコードはブラウザ内でのみ行われます。ファイルは外部に送信されません。<br>
+    プレビューはループ点があるサンプルは実機同様に繰り返し再生し、短いサンプルでも聴き取りやすいよう長さを確保しています。
+  </footer>
+
+</div>
+
+<input type="file" id="wavInput" accept="audio/wav,.wav" class="hidden">
+<div id="toast" class="toast"></div>
+
+<script src="spc-core.js"></script>
+<script src="spc-app.js"></script>
+</body>
+</html>
