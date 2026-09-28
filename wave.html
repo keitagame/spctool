@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="ja" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wavetable Sound Generator - Waveform Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        cyber: {
+                            bg: '#0a0d14',
+                            panel: '#121824',
+                            border: '#1e293b',
+                            accent: '#00f0ff',
+                            pink: '#ff007f',
+                            green: '#00ff66',
+                            yellow: '#ffb700',
+                            dim: '#64748b'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            background-color: #0a0d14;
+            color: #f1f5f9;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            user-select: none;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0a0d14;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00f0ff;
+        }
+
+        /* Neon Glow Utility Effects */
+        .glow-accent {
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+        }
+        .glow-pink {
+            box-shadow: 0 0 10px rgba(255, 0, 127, 0.4);
+        }
+        .glow-green {
+            box-shadow: 0 0 10px rgba(0, 255, 102, 0.4);
+        }
+
+        /* Keyboard key styling */
+        .white-key {
+            background: linear-gradient(to bottom, #ffffff 0%, #e2e8f0 100%);
+            color: #0f172a;
+        }
+        .white-key.active {
+            background: #00f0ff;
+            color: #000;
+            box-shadow: 0 0 12px #00f0ff;
+        }
+        .black-key {
+            background: linear-gradient(to bottom, #1e293b 0%, #0f172a 100%);
+            color: #f8fafc;
+        }
+        .black-key.active {
+            background: #ff007f;
+            color: #fff;
+            box-shadow: 0 0 12px #ff007f;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between p-2 md:p-4 text-xs md:text-sm">
+
+    <!-- Header -->
+    <header class="bg-cyber-panel border border-cyber-border rounded-xl p-3 mb-4 flex flex-wrap justify-between items-center gap-2">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/50 flex items-center justify-center text-cyan-400">
+                <i data-lucide="activity" class="w-5 h-5"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-base md:text-lg text-cyan-400 tracking-wider flex items-center gap-2">
+                    WAVETABLE SYNTH LAB
+                    <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-cyan-300">C4 OPTIMIZED</span>
+                </h1>
+                <p class="text-cyber-dim text-xs">波形メモリ音源用 高機能波形エディタ & C4エクスポートツール</p>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+            <button id="btn-play-c4" class="px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-bold rounded-lg flex items-center gap-2 transition glow-accent active:scale-95">
+                <i data-lucide="play" class="w-4 h-4 fill-current"></i>
+                <span id="play-c4-text">C4 (261.6Hz) 再生</span>
+            </button>
+            <button id="btn-reset" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg flex items-center gap-1 transition">
+                <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                リセット
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main class="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-grow">
+
+        <!-- LEFT COLUMN: Canvas & Drawing Controls (7 cols on LG) -->
+        <section class="lg:col-span-7 flex flex-col gap-4">
+            <!-- Canvas Container Card -->
+            <div class="bg-cyber-panel border border-cyber-border rounded-xl p-4 flex flex-col gap-3 relative">
+                
+                <!-- Canvas Control Header -->
+                <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+                    <div class="flex items-center gap-4">
+                        <span class="font-semibold text-slate-300 flex items-center gap-1">
+                            <i data-lucide="edit-3" class="w-4 h-4 text-cyan-400"></i> 波形キャンバス
+                        </span>
+                        <span id="hover-info" class="font-mono text-cyan-400 bg-black/40 px-2 py-0.5 rounded border border-cyan-900/50 min-w-[120px]">
+                            Step: - | Val: -
+                        </span>
+                    </div>
+
+                    <div class="flex items-center gap-3">
+                        <!-- Mode Selector -->
+                        <div class="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
+                            <button id="tool-pen" class="px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                                <i data-lucide="pencil" class="w-3.5 h-3.5"></i> ペン
+                            </button>
+                            <button id="tool-line" class="px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition text-slate-400 hover:text-slate-200">
+                                <i data-lucide="minus" class="w-3.5 h-3.5"></i> 直線
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Canvas Element -->
+                <div class="relative w-full aspect-[2/1] min-h-[220px] bg-slate-950 rounded-lg border border-slate-800 overflow-hidden cursor-crosshair">
+                    <canvas id="waveCanvas" class="w-full h-full block"></canvas>
+                </div>
+
+                <!-- Settings Controls (Steps & Bit depth) -->
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">ステップ数 (長さ)</label>
+                        <select id="select-steps" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-cyan-300 focus:outline-none focus:border-cyan-500">
+                            <option value="8">8 ステップ</option>
+                            <option value="16">16 ステップ</option>
+                            <option value="32" selected>32 ステップ (レトロ標準)</option>
+                            <option value="64">64 ステップ</option>
+                            <option value="128">128 ステップ</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">ビット深度 / 値数値表現</label>
+                        <select id="select-bitdepth" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-cyan-300 focus:outline-none focus:border-cyan-500">
+                            <option value="4bit">4-bit (0 ～ 15)</option>
+                            <option value="8bit" selected>8-bit (0 ～ 255)</option>
+                            <option value="16bit">16-bit Signed (-32768～32767)</option>
+                            <option value="float">Float (-1.0 ～ +1.0)</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">再生補間方式</label>
+                        <select id="select-interp" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-cyan-300 focus:outline-none focus:border-cyan-500">
+                            <option value="step" selected>ステップ (波形メモリ生音)</option>
+                            <option value="linear">線形補間 (Linear)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Wave Editing Quick Actions Toolbar -->
+                <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-800/80">
+                    <span class="text-xs text-slate-400 mr-1 font-semibold">加工:</span>
+                    <button id="btn-smooth" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded flex items-center gap-1">
+                        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-400"></i> Smooth
+                    </button>
+                    <button id="btn-shift-left" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded flex items-center gap-1">
+                        <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> Shift L
+                    </button>
+                    <button id="btn-shift-right" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded flex items-center gap-1">
+                        <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i> Shift R
+                    </button>
+                    <button id="btn-invert" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded flex items-center gap-1">
+                        <i data-lucide="arrow-up-down" class="w-3.5 h-3.5"></i> 反転
+                    </button>
+                    <button id="btn-normalize" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded flex items-center gap-1">
+                        <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i> 正規化
+                    </button>
+                </div>
+
+                <!-- Waveform Presets -->
+                <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span class="text-xs text-slate-400 mr-1 font-semibold">プリセット:</span>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="sine">正弦波 (Sine)</button>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="triangle">三角波 (Triangle)</button>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="sawtooth">鋸波 (Saw)</button>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="square">矩形波 (Square)</button>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="pulse125">パルス (12.5%)</button>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="pulse25">パルス (25%)</button>
+                    <button class="btn-preset px-2 py-1 bg-slate-900 hover:bg-cyan-950 hover:text-cyan-300 border border-slate-800 rounded text-xs text-slate-300 transition" data-preset="noise">ノイズ (Noise)</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT COLUMN: Sound Test, Visualizer & Code Export (5 cols on LG) -->
+        <section class="lg:col-span-5 flex flex-col gap-4">
+
+            <!-- Audio Monitoring & Keyboard -->
+            <div class="bg-cyber-panel border border-cyber-border rounded-xl p-4 flex flex-col gap-3">
+                <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <span class="font-semibold text-slate-300 flex items-center gap-1">
+                        <i data-lucide="volume-2" class="w-4 h-4 text-emerald-400"></i> モニター / オシロスコープ
+                    </span>
+                    <span id="freq-display" class="font-mono text-xs text-emerald-400">261.63 Hz (C4)</span>
+                </div>
+
+                <!-- Scope Visualizer Screen -->
+                <div class="w-full h-24 bg-slate-950 rounded-lg border border-slate-800 overflow-hidden relative">
+                    <canvas id="scopeCanvas" class="w-full h-full block"></canvas>
+                    <div class="absolute top-1 left-2 text-[10px] font-mono text-emerald-500/70">OSCILLOSCOPE / SPECTRUM</div>
+                </div>
+
+                <!-- Audio ADSR / Master Control -->
+                <div class="grid grid-cols-3 gap-2 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80 text-xs">
+                    <div>
+                        <div class="flex justify-between text-slate-400 text-[11px] mb-1">
+                            <span>Vol</span> <span id="val-vol">70%</span>
+                        </div>
+                        <input type="range" id="param-vol" min="0" max="1" step="0.01" value="0.7" class="w-full h-1 bg-slate-800 rounded accent-emerald-400">
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-slate-400 text-[11px] mb-1">
+                            <span>Attack</span> <span id="val-atk">10ms</span>
+                        </div>
+                        <input type="range" id="param-atk" min="0.001" max="0.5" step="0.005" value="0.01" class="w-full h-1 bg-slate-800 rounded accent-emerald-400">
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-slate-400 text-[11px] mb-1">
+                            <span>Release</span> <span id="val-rel">150ms</span>
+                        </div>
+                        <input type="range" id="param-rel" min="0.01" max="1.0" step="0.01" value="0.15" class="w-full h-1 bg-slate-800 rounded accent-emerald-400">
+                    </div>
+                </div>
+
+                <!-- Onscreen Interactive Keyboard (C3 ~ C5) -->
+                <div class="flex flex-col gap-1">
+                    <div class="flex justify-between items-center text-[11px] text-slate-400">
+                        <span>キーボード試聴 (PCキーボード/タップ対応)</span>
+                        <span>C3 - C5</span>
+                    </div>
+                    <div id="keyboard" class="relative h-20 w-full bg-slate-950 rounded-lg border border-slate-800 flex overflow-hidden p-0.5">
+                        <!-- Keys dynamically initialized or hardcoded in CSS layout -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Export & Import Section -->
+            <div class="bg-cyber-panel border border-cyber-border rounded-xl p-4 flex flex-col gap-3 flex-grow">
+                <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <span class="font-semibold text-slate-300 flex items-center gap-1">
+                        <i data-lucide="download" class="w-4 h-4 text-pink-500"></i> エクスポート / インポート
+                    </span>
+                    <div class="flex gap-1">
+                        <button id="tab-btn-wav" class="px-2.5 py-1 text-xs rounded bg-pink-500/20 text-pink-300 border border-pink-500/40">WAV (C4)</button>
+                        <button id="tab-btn-code" class="px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-400 hover:text-slate-200">データ/コード</button>
+                    </div>
+                </div>
+
+                <!-- TAB 1: WAV Export Options -->
+                <div id="tab-wav" class="flex flex-col gap-3">
+                    <div class="p-3 bg-slate-950 rounded-lg border border-slate-800 flex flex-col gap-2">
+                        <div class="flex items-start justify-between">
+                            <div>
+                                <h4 class="font-bold text-pink-400 text-xs">① C4 Single-Cycle WAV</h4>
+                                <p class="text-[11px] text-slate-400 mt-0.5">
+                                    ステップ数を1周期とするC4(261.6256Hz)ピッチ適合WAV。<br>
+                                    <span class="text-pink-300/80">Serum / Vital / サンプラーへの読み込みに最適</span>
+                                </p>
+                            </div>
+                            <button id="btn-export-single-wav" class="px-3 py-1.5 bg-pink-600 hover:bg-pink-500 text-white rounded font-medium text-xs flex items-center gap-1 shadow transition glow-pink shrink-0">
+                                <i data-lucide="download" class="w-3.5 h-3.5"></i> 1周期WAV
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="p-3 bg-slate-950 rounded-lg border border-slate-800 flex flex-col gap-2">
+                        <div class="flex items-start justify-between">
+                            <div>
+                                <h4 class="font-bold text-cyan-400 text-xs">② C4 1秒間 ループWAV (44.1kHz)</h4>
+                                <p class="text-[11px] text-slate-400 mt-0.5">
+                                    標準44.1kHzでC4周波数波形を1秒間正確に連続配置したWAV。<br>
+                                    一般的なDAWやオーディオプレイヤーでループ再生可能
+                                </p>
+                            </div>
+                            <button id="btn-export-c4-wav" class="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded font-medium text-xs flex items-center gap-1 shadow transition glow-accent shrink-0">
+                                <i data-lucide="download" class="w-3.5 h-3.5"></i> 1秒WAV
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 2: Source Code & Text Data Export/Import -->
+                <div id="tab-code" class="hidden flex-col gap-3">
+                    <div class="flex items-center gap-2">
+                        <select id="code-format" class="bg-slate-900 border border-slate-700 text-xs text-cyan-300 rounded px-2 py-1 focus:outline-none">
+                            <option value="hex">Hex 配列 (0x00, 0x0F, ...)</option>
+                            <option value="c">C言語 uint8_t 配列</option>
+                            <option value="asm">Assembly (.db)</option>
+                            <option value="json">JSON Array</option>
+                            <option value="csv">CSV (コンマ区切り)</option>
+                        </select>
+                        <button id="btn-copy-code" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded text-xs flex items-center gap-1">
+                            <i data-lucide="copy" class="w-3.5 h-3.5"></i> コピー
+                        </button>
+                        <button id="btn-download-txt" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded text-xs flex items-center gap-1">
+                            <i data-lucide="file-text" class="w-3.5 h-3.5"></i> 保存
+                        </button>
+                    </div>
+
+                    <textarea id="code-output" rows="4" class="w-full bg-slate-950 font-mono text-xs text-cyan-400 p-2.5 rounded-lg border border-slate-800 focus:outline-none focus:border-cyan-600 resize-none" placeholder="コードデータ"></textarea>
+
+                    <!-- Import Panel -->
+                    <div class="pt-2 border-t border-slate-800 flex items-center gap-2">
+                        <input type="text" id="import-input" placeholder="Hex, CSV, または JSON データを入力して読み込み..." class="flex-grow bg-slate-950 text-xs text-slate-200 p-2 rounded border border-slate-800 focus:outline-none focus:border-cyan-500">
+                        <button id="btn-import" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded flex items-center gap-1 shrink-0">
+                            <i data-lucide="upload" class="w-3.5 h-3.5"></i> インポート
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="mt-4 pt-3 border-t border-slate-800/80 text-center text-cyber-dim text-xs">
+        Wavetable Sound Generator Lab &bull; Single-Cycle C4 Wavetable Exporter
+    </footer>
+
+    <script>
+        // Global Application State
+        const state = {
+            steps: 32,
+            bitDepth: '8bit', // '4bit', '8bit', '16bit', 'float'
+            interpolation: 'step', // 'step', 'linear'
+            tool: 'pen', // 'pen', 'line'
+            data: new Float32Array(32), // normalized values [-1.0 to 1.0]
+            
+            // Audio Web Audio Context
+            audioCtx: null,
+            isPlayingC4: false,
+            activeNodes: [],
+            analyser: null,
+            scopeCanvasCtx: null,
+            
+            // Interactive drawing state
+            isDrawing: false,
+            lineStartStep: null,
+            lineStartVal: null,
+            
+            // Audio Settings
+            volume: 0.7,
+            attack: 0.01,
+            release: 0.15
+        };
+
+        // Standard Note Frequencies (C3 to C5)
+        const C4_FREQ = 261.6256;
+        const NOTES = [
+            { name: 'C3', freq: 130.81, key: 'z', isBlack: false },
+            { name: 'C#3', freq: 138.59, key: 's', isBlack: true },
+            { name: 'D3', freq: 146.83, key: 'x', isBlack: false },
+            { name: 'D#3', freq: 155.56, key: 'd', isBlack: true },
+            { name: 'E3', freq: 164.81, key: 'c', isBlack: false },
+            { name: 'F3', freq: 174.61, key: 'v', isBlack: false },
+            { name: 'F#3', freq: 185.00, key: 'g', isBlack: true },
+            { name: 'G3', freq: 196.00, key: 'b', isBlack: false },
+            { name: 'G#3', freq: 207.65, key: 'h', isBlack: true },
+            { name: 'A3', freq: 220.00, key: 'n', isBlack: false },
+            { name: 'A#3', freq: 233.08, key: 'j', isBlack: true },
+            { name: 'B3', freq: 246.94, key: 'm', isBlack: false },
+            { name: 'C4', freq: 261.63, key: 'q', isBlack: false },
+            { name: 'C#4', freq: 277.18, key: '2', isBlack: true },
+            { name: 'D4', freq: 293.66, key: 'w', isBlack: false },
+            { name: 'D#4', freq: 311.13, key: '3', isBlack: true },
+            { name: 'E4', freq: 329.63, key: 'e', isBlack: false },
+            { name: 'F4', freq: 349.23, key: 'r', isBlack: false },
+            { name: 'F#4', freq: 369.99, key: '5', isBlack: true },
+            { name: 'G4', freq: 392.00, key: 't', isBlack: false },
+            { name: 'G#4', freq: 415.30, key: '6', isBlack: true },
+            { name: 'A4', freq: 440.00, key: 'y', isBlack: false },
+            { name: 'A#4', freq: 466.16, key: '7', isBlack: true },
+            { name: 'B4', freq: 493.88, key: 'u', isBlack: false },
+            { name: 'C5', freq: 523.25, key: 'i', isBlack: false }
+        ];
+
+        // Utility to map internal float [-1..1] to current bit depth quantized value & text
+        function getQuantizedValue(floatVal, depth = state.bitDepth) {
+            // Clamp float
+            const f = Math.max(-1.0, Math.min(1.0, floatVal));
+            const norm01 = (f + 1.0) / 2.0; // 0.0 to 1.0
+
+            switch (depth) {
+                case '4bit': {
+                    const val = Math.round(norm01 * 15);
+                    const backFloat = (val / 15) * 2.0 - 1.0;
+                    return { raw: val, norm: backFloat, display: `${val} (0x${val.toString(16).toUpperCase()})`, max: 15 };
+                }
+                case '8bit': {
+                    const val = Math.round(norm01 * 255);
+                    const backFloat = (val / 255) * 2.0 - 1.0;
+                    const hex = val.toString(16).padStart(2, '0').toUpperCase();
+                    return { raw: val, norm: backFloat, display: `${val} (0x${hex})`, max: 255 };
+                }
+                case '16bit': {
+                    // signed 16bit -32768 to 32767
+                    const val = Math.round(f * 32767);
+                    const backFloat = val / 32767;
+                    return { raw: val, norm: backFloat, display: `${val}`, max: 32767 };
+                }
+                case 'float':
+                default: {
+                    return { raw: f, norm: f, display: f.toFixed(3), max: 1.0 };
+                }
+            }
+        }
+
+        function generatePreset(type) {
+            const N = state.steps;
+            for (let i = 0; i < N; i++) {
+                const phase = i / N; // 0.0 to 1.0
+                let val = 0;
+
+                switch (type) {
+                    case 'sine':
+                        val = Math.sin(phase * 2 * Math.PI);
+                        break;
+                    case 'triangle':
+                        val = phase < 0.5 ? (4 * phase - 1) : (3 - 4 * phase);
+                        break;
+                    case 'sawtooth':
+                        val = 2 * phase - 1;
+                        break;
+                    case 'square':
+                        val = phase < 0.5 ? 1.0 : -1.0;
+                        break;
+                    case 'pulse125':
+                        val = phase < 0.125 ? 1.0 : -1.0;
+                        break;
+                    case 'pulse25':
+                        val = phase < 0.25 ? 1.0 : -1.0;
+                        break;
+                    case 'noise':
+                        val = Math.random() * 2 - 1;
+                        break;
+                }
+                
+                // Quantize according to current bit depth
+                const q = getQuantizedValue(val);
+                state.data[i] = q.norm;
+            }
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        }
+
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            const rect = canvas.getBoundingClientRect();
+            canvas.width = rect.width * window.devicePixelRatio;
+            canvas.height = rect.height * window.devicePixelRatio;
+            renderCanvas();
+        }
+
+        function renderCanvas() {
+            if (!canvas.width || !canvas.height) return;
+            const w = canvas.width;
+            const h = canvas.height;
+            const N = state.steps;
+
+            // Clear background
+            ctx.fillStyle = '#020617';
+            ctx.fillRect(0, 0, w, h);
+
+            // Draw Background Grid
+            ctx.lineWidth = 1 * window.devicePixelRatio;
+            ctx.strokeStyle = '#1e293b';
+
+            // Center zero line
+            const centerY = h / 2;
+            ctx.beginPath();
+            ctx.strokeStyle = '#334155';
+            ctx.moveTo(0, centerY);
+            ctx.lineTo(w, centerY);
+            ctx.stroke();
+
+            // Horizontal quantization grid lines
+            const gridLines = state.bitDepth === '4bit' ? 16 : 8;
+            ctx.strokeStyle = '#0f172a';
+            for (let i = 1; i < gridLines; i++) {
+                const y = (h / gridLines) * i;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(w, y);
+                ctx.stroke();
+            }
+
+            // Vertical step grid lines
+            const stepW = w / N;
+            for (let i = 0; i <= N; i++) {
+                const x = i * stepW;
+                ctx.beginPath();
+                ctx.strokeStyle = (i % 4 === 0) ? '#334155' : '#1e293b';
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, h);
+                ctx.stroke();
+            }
+
+            // Draw Step Bars / Interpolated Line
+            ctx.fillStyle = 'rgba(0, 240, 255, 0.2)';
+            ctx.strokeStyle = '#00f0ff';
+            ctx.lineWidth = 2 * window.devicePixelRatio;
+
+            if (state.interpolation === 'step') {
+                // Step Bar / Discrete waveform display
+                for (let i = 0; i < N; i++) {
+                    const q = getQuantizedValue(state.data[i]);
+                    const norm = q.norm; // -1 to 1
+                    const valY = centerY - (norm * (h / 2 - 12));
+                    const x = i * stepW;
+
+                    // Fill bar
+                    ctx.fillStyle = 'rgba(0, 240, 255, 0.15)';
+                    ctx.fillRect(x + 1, Math.min(centerY, valY), stepW - 2, Math.abs(valY - centerY));
+
+                    // Step Top Line
+                    ctx.beginPath();
+                    ctx.strokeStyle = '#00f0ff';
+                    ctx.moveTo(x, valY);
+                    ctx.lineTo(x + stepW, valY);
+                    ctx.stroke();
+
+                    // Step Vertical Connector
+                    if (i > 0) {
+                        const prevQ = getQuantizedValue(state.data[i - 1]);
+                        const prevY = centerY - (prevQ.norm * (h / 2 - 12));
+                        ctx.beginPath();
+                        ctx.strokeStyle = 'rgba(0, 240, 255, 0.5)';
+                        ctx.moveTo(x, prevY);
+                        ctx.lineTo(x, valY);
+                        ctx.stroke();
+                    }
+
+                    // Handle dot
+                    ctx.fillStyle = '#ff007f';
+                    ctx.beginPath();
+                    ctx.arc(x + stepW / 2, valY, 3 * window.devicePixelRatio, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            } else {
+                // Linear Interpolation Line
+                ctx.beginPath();
+                for (let i = 0; i < N; i++) {
+                    const q = getQuantizedValue(state.data[i]);
+                    const valY = centerY - (q.norm * (h / 2 - 12));
+                    const x = i * stepW + stepW / 2;
+
+                    if (i === 0) ctx.moveTo(x, valY);
+                    else ctx.lineTo(x, valY);
+                }
+                ctx.stroke();
+
+                // Draw dots
+                for (let i = 0; i < N; i++) {
+                    const q = getQuantizedValue(state.data[i]);
+                    const valY = centerY - (q.norm * (h / 2 - 12));
+                    const x = i * stepW + stepW / 2;
+                    ctx.fillStyle = '#00f0ff';
+                    ctx.beginPath();
+                    ctx.arc(x, valY, 4 * window.devicePixelRatio, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+
+        function getCanvasStepVal(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+            const x = Math.max(0, Math.min(rect.width - 1, clientX - rect.left));
+            const y = Math.max(0, Math.min(rect.height - 1, clientY - rect.top));
+
+            const step = Math.floor((x / rect.width) * state.steps);
+            
+            // Normalized y from 1.0 (top) to -1.0 (bottom)
+            const centerY = rect.height / 2;
+            const normY = -((y - centerY) / (rect.height / 2 - 6));
+            const clampedNormY = Math.max(-1.0, Math.min(1.0, normY));
+
+            return { step: Math.min(state.steps - 1, step), val: clampedNormY };
+        }
+
+        function handlePointerDown(e) {
+            state.isDrawing = true;
+            const { step, val } = getCanvasStepVal(e);
+
+            if (state.tool === 'pen') {
+                const q = getQuantizedValue(val);
+                state.data[step] = q.norm;
+            } else if (state.tool === 'line') {
+                state.lineStartStep = step;
+                state.lineStartVal = getQuantizedValue(val).norm;
+            }
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        }
+
+        function handlePointerMove(e) {
+            const { step, val } = getCanvasStepVal(e);
+            const q = getQuantizedValue(val);
+            
+            // Update hover text info
+            document.getElementById('hover-info').innerText = `Step: ${step + 1}/${state.steps} | Val: ${q.display}`;
+
+            if (!state.isDrawing) return;
+
+            if (state.tool === 'pen') {
+                state.data[step] = q.norm;
+                renderCanvas();
+                updateAudioWave();
+                updateCodeOutput();
+            } else if (state.tool === 'line' && state.lineStartStep !== null) {
+                // Line preview/interpolate
+                const startS = state.lineStartStep;
+                const startV = state.lineStartVal;
+                const endS = step;
+                const endV = q.norm;
+
+                const minS = Math.min(startS, endS);
+                const maxS = Math.max(startS, endS);
+
+                for (let s = minS; s <= maxS; s++) {
+                    let interpVal = startV;
+                    if (minS !== maxS) {
+                        const t = (s - startS) / (endS - startS);
+                        interpVal = startV + t * (endV - startV);
+                    }
+                    const qInterp = getQuantizedValue(interpVal);
+                    state.data[s] = qInterp.norm;
+                }
+                renderCanvas();
+                updateAudioWave();
+                updateCodeOutput();
+            }
+        }
+
+        function handlePointerUp() {
+            state.isDrawing = false;
+            state.lineStartStep = null;
+            state.lineStartVal = null;
+        }
+
+        canvas.addEventListener('mousedown', handlePointerDown);
+        canvas.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', handlePointerUp);
+
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handlePointerDown(e); }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => { e.preventDefault(); handlePointerMove(e); }, { passive: false });
+        canvas.addEventListener('touchend', handlePointerUp);
+
+        document.getElementById('btn-smooth').addEventListener('click', () => {
+            const N = state.steps;
+            const newData = new Float32Array(N);
+            for (let i = 0; i < N; i++) {
+                const prev = state.data[(i - 1 + N) % N];
+                const curr = state.data[i];
+                const next = state.data[(i + 1) % N];
+                const smoothed = (prev + curr * 2 + next) / 4;
+                newData[i] = getQuantizedValue(smoothed).norm;
+            }
+            state.data = newData;
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        document.getElementById('btn-shift-left').addEventListener('click', () => {
+            const first = state.data[0];
+            for (let i = 0; i < state.steps - 1; i++) {
+                state.data[i] = state.data[i + 1];
+            }
+            state.data[state.steps - 1] = first;
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        document.getElementById('btn-shift-right').addEventListener('click', () => {
+            const last = state.data[state.steps - 1];
+            for (let i = state.steps - 1; i > 0; i--) {
+                state.data[i] = state.data[i - 1];
+            }
+            state.data[0] = last;
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        document.getElementById('btn-invert').addEventListener('click', () => {
+            for (let i = 0; i < state.steps; i++) {
+                state.data[i] = getQuantizedValue(-state.data[i]).norm;
+            }
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        document.getElementById('btn-normalize').addEventListener('click', () => {
+            let maxAbs = 0;
+            for (let i = 0; i < state.steps; i++) {
+                maxAbs = Math.max(maxAbs, Math.abs(state.data[i]));
+            }
+            if (maxAbs > 0) {
+                for (let i = 0; i < state.steps; i++) {
+                    state.data[i] = getQuantizedValue(state.data[i] / maxAbs).norm;
+                }
+            }
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        function initAudio() {
+            if (!state.audioCtx) {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                state.audioCtx = new AudioCtx();
+                
+                state.analyser = state.audioCtx.createAnalyser();
+                state.analyser.fftSize = 512;
+                state.analyser.connect(state.audioCtx.destination);
+
+                startScopeVisualizer();
+            }
+            if (state.audioCtx.state === 'suspended') {
+                state.audioCtx.resume();
+            }
+        }
+
+        // Generate AudioBuffer for Wavetable reproduction with Linear/Step options
+        function createWavetableBuffer(freq) {
+            initAudio();
+            const ctx = state.audioCtx;
+            
+            // Standard AudioBuffer playback method (Allows step/linear reproduction)
+            const sr = ctx.sampleRate;
+            const cycleDuration = 1 / freq;
+            const samplesPerCycle = Math.round(sr * cycleDuration);
+            
+            const buffer = ctx.createBuffer(1, samplesPerCycle, sr);
+            const channel = buffer.getChannelData(0);
+
+            const N = state.steps;
+            for (let i = 0; i < samplesPerCycle; i++) {
+                const phase = i / samplesPerCycle; // 0 to 1
+                let stepIdx = Math.floor(phase * N);
+                
+                if (state.interpolation === 'step') {
+                    channel[i] = state.data[stepIdx];
+                } else {
+                    // Linear interpolation
+                    const exactStep = phase * N;
+                    const idx0 = Math.floor(exactStep) % N;
+                    const idx1 = (idx0 + 1) % N;
+                    const frac = exactStep - Math.floor(exactStep);
+                    channel[i] = state.data[idx0] * (1 - frac) + state.data[idx1] * frac;
+                }
+            }
+            return buffer;
+        }
+
+        function playNote(freq) {
+            initAudio();
+            const ctx = state.audioCtx;
+            
+            const buffer = createWavetableBuffer(freq);
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+            source.loop = true;
+
+            const gainNode = ctx.createGain();
+            const now = ctx.currentTime;
+            
+            // Attack Envelope
+            gainNode.gain.setValueAtTime(0, now);
+            gainNode.gain.linearRampToValueAtTime(state.volume, now + state.attack);
+
+            source.connect(gainNode);
+            gainNode.connect(state.analyser);
+
+            source.start(now);
+
+            const nodeObj = { source, gainNode, freq };
+            state.activeNodes.push(nodeObj);
+            return nodeObj;
+        }
+
+        function stopNote(nodeObj) {
+            if (!nodeObj || !state.audioCtx) return;
+            const ctx = state.audioCtx;
+            const now = ctx.currentTime;
+            
+            try {
+                // Release Envelope
+                nodeObj.gainNode.gain.cancelScheduledValues(now);
+                nodeObj.gainNode.gain.setValueAtTime(nodeObj.gainNode.gain.value, now);
+                nodeObj.gainNode.gain.exponentialRampToValueAtTime(0.0001, now + state.release);
+                
+                setTimeout(() => {
+                    nodeObj.source.stop();
+                    nodeObj.source.disconnect();
+                }, state.release * 1000 + 50);
+            } catch (e) {
+                // Ignore audio node disconnect race conditions
+            }
+
+            state.activeNodes = state.activeNodes.filter(n => n !== nodeObj);
+        }
+
+        function updateAudioWave() {
+            // Live update running sounds
+            if (state.activeNodes.length > 0) {
+                const nodesToUpdate = [...state.activeNodes];
+                nodesToUpdate.forEach(n => {
+                    const freq = n.freq;
+                    stopNote(n);
+                    playNote(freq);
+                });
+            }
+        }
+
+        // C4 Toggle Play Button
+        let c4AudioNode = null;
+        document.getElementById('btn-play-c4').addEventListener('click', () => {
+            const btnText = document.getElementById('play-c4-text');
+            if (state.isPlayingC4) {
+                stopNote(c4AudioNode);
+                c4AudioNode = null;
+                state.isPlayingC4 = false;
+                btnText.innerText = "C4 (261.6Hz) 再生";
+            } else {
+                c4AudioNode = playNote(C4_FREQ);
+                state.isPlayingC4 = true;
+                btnText.innerText = "停止 (Stop)";
+            }
+        });
+
+        function startScopeVisualizer() {
+            const scopeCanvas = document.getElementById('scopeCanvas');
+            const sCtx = scopeCanvas.getContext('2d');
+
+            function drawScope() {
+                requestAnimationFrame(drawScope);
+                const w = scopeCanvas.width = scopeCanvas.clientWidth * window.devicePixelRatio;
+                const h = scopeCanvas.height = scopeCanvas.clientHeight * window.devicePixelRatio;
+
+                sCtx.fillStyle = '#020617';
+                sCtx.fillRect(0, 0, w, h);
+
+                if (!state.analyser) return;
+
+                const bufferLength = state.analyser.frequencyBinCount;
+                const timeData = new Uint8Array(bufferLength);
+                state.analyser.getByteTimeDomainData(timeData);
+
+                sCtx.lineWidth = 2 * window.devicePixelRatio;
+                sCtx.strokeStyle = '#10b981';
+                sCtx.beginPath();
+
+                const sliceWidth = w / bufferLength;
+                let x = 0;
+
+                for (let i = 0; i < bufferLength; i++) {
+                    const v = timeData[i] / 128.0; // 0 to 2
+                    const y = (v * h) / 2;
+
+                    if (i === 0) sCtx.moveTo(x, y);
+                    else sCtx.lineTo(x, y);
+
+                    x += sliceWidth;
+                }
+                sCtx.stroke();
+            }
+            drawScope();
+        }
+
+        function renderKeyboard() {
+            const kb = document.getElementById('keyboard');
+            kb.innerHTML = '';
+
+            NOTES.forEach(note => {
+                const keyEl = document.createElement('div');
+                const isBlack = note.isBlack;
+                keyEl.className = `flex-1 h-full rounded-b transition flex flex-col justify-end items-center pb-1 text-[10px] cursor-pointer select-none font-mono ${isBlack ? 'black-key text-slate-300 -mx-1.5 z-10 h-3/5 rounded-b-md' : 'white-key border-r border-slate-300'}`;
+                keyEl.dataset.note = note.name;
+                keyEl.dataset.freq = note.freq;
+
+                keyEl.innerHTML = `<span>${note.name}</span><span class="text-[8px] opacity-60">(${note.key.toUpperCase()})</span>`;
+
+                let activeNode = null;
+
+                const startPress = () => {
+                    keyEl.classList.add('active');
+                    document.getElementById('freq-display').innerText = `${note.freq.toFixed(2)} Hz (${note.name})`;
+                    activeNode = playNote(note.freq);
+                };
+
+                const endPress = () => {
+                    keyEl.classList.remove('active');
+                    if (activeNode) {
+                        stopNote(activeNode);
+                        activeNode = null;
+                    }
+                };
+
+                keyEl.addEventListener('mousedown', startPress);
+                keyEl.addEventListener('mouseup', endPress);
+                keyEl.addEventListener('mouseleave', endPress);
+
+                keyEl.addEventListener('touchstart', (e) => { e.preventDefault(); startPress(); });
+                keyEl.addEventListener('touchend', endPress);
+
+                kb.appendChild(keyEl);
+            });
+        }
+
+        // PC Keyboard Shortcuts
+        const activePCKeys = new Map();
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            const key = e.key.toLowerCase();
+            if (activePCKeys.has(key)) return;
+
+            const note = NOTES.find(n => n.key === key);
+            if (note) {
+                const keyEl = document.querySelector(`[data-note="${note.name}"]`);
+                if (keyEl) keyEl.classList.add('active');
+                document.getElementById('freq-display').innerText = `${note.freq.toFixed(2)} Hz (${note.name})`;
+                const node = playNote(note.freq);
+                activePCKeys.set(key, { node, keyEl });
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (activePCKeys.has(key)) {
+                const { node, keyEl } = activePCKeys.get(key);
+                if (keyEl) keyEl.classList.remove('active');
+                stopNote(node);
+                activePCKeys.delete(key);
+            }
+        });
+
+        // Write string to DataView
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        // Create RIFF WAV File Blob
+        function createWavBlob(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            /* RIFF identifier */
+            writeString(view, 0, 'RIFF');
+            /* RIFF chunk length */
+            view.setUint32(4, 36 + samples.length * 2, true);
+            /* RIFF type */
+            writeString(view, 8, 'WAVE');
+            /* format chunk identifier */
+            writeString(view, 12, 'fmt ');
+            /* format chunk length */
+            view.setUint32(16, 16, true);
+            /* sample format (raw PCM 16-bit) */
+            view.setUint16(20, 1, true);
+            /* channel count */
+            view.setUint16(22, 1, true); // Mono
+            /* sample rate */
+            view.setUint32(24, sampleRate, true);
+            /* byte rate (sampleRate * blockAlign) */
+            view.setUint32(28, sampleRate * 2, true);
+            /* block align (channel count * bytes per sample) */
+            view.setUint16(32, 2, true);
+            /* bits per sample */
+            view.setUint16(34, 16, true);
+            /* data chunk identifier */
+            writeString(view, 36, 'data');
+            /* data chunk length */
+            view.setUint32(40, samples.length * 2, true);
+
+            // Write 16-bit PCM float samples
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++, offset += 2) {
+                const s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+
+        // 1. Single Cycle C4 WAV Export
+        // Sample Rate = steps * C4_FREQ (e.g., 32 steps * 261.6256Hz = 8372.0192 Hz)
+        document.getElementById('btn-export-single-wav').addEventListener('click', () => {
+            const N = state.data.length;
+            const singleCycleSamples = new Float32Array(N);
+
+            for (let i = 0; i < N; i++) {
+                const q = getQuantizedValue(state.data[i]);
+                singleCycleSamples[i] = q.norm;
+            }
+
+            const targetSR = Math.round(N * C4_FREQ);
+            const blob = createWavBlob(singleCycleSamples, targetSR);
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `wavetable_C4_single_cycle_${state.steps}steps_${state.bitDepth}.wav`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // 2. 1-Second C4 Loop WAV Export (44.1kHz)
+        document.getElementById('btn-export-c4-wav').addEventListener('click', () => {
+            const sr = 44100;
+            const duration = 1.0; // 1 sec
+            const totalSamples = sr * duration;
+            const samples = new Float32Array(totalSamples);
+            const cycleSamples = sr / C4_FREQ; // samples in one C4 cycle
+            const N = state.steps;
+
+            for (let i = 0; i < totalSamples; i++) {
+                const cyclePhase = (i % cycleSamples) / cycleSamples; // 0 to 1
+                const stepIdx = Math.floor(cyclePhase * N);
+
+                if (state.interpolation === 'step') {
+                    samples[i] = getQuantizedValue(state.data[stepIdx]).norm;
+                } else {
+                    const exactStep = cyclePhase * N;
+                    const idx0 = Math.floor(exactStep) % N;
+                    const idx1 = (idx0 + 1) % N;
+                    const frac = exactStep - Math.floor(exactStep);
+                    const val = state.data[idx0] * (1 - frac) + state.data[idx1] * frac;
+                    samples[i] = getQuantizedValue(val).norm;
+                }
+            }
+
+            const blob = createWavBlob(samples, sr);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `wavetable_C4_1sec_loop_44100Hz_${state.steps}steps.wav`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        function updateCodeOutput() {
+            const format = document.getElementById('code-format').value;
+            const textarea = document.getElementById('code-output');
+
+            const rawValues = [];
+            for (let i = 0; i < state.steps; i++) {
+                const q = getQuantizedValue(state.data[i]);
+                rawValues.push(q.raw);
+            }
+
+            let outputText = '';
+
+            switch (format) {
+                case 'hex': {
+                    const hexArr = rawValues.map(v => {
+                        if (state.bitDepth === '4bit') return `0x${v.toString(16).toUpperCase()}`;
+                        if (state.bitDepth === '8bit') return `0x${v.toString(16).padStart(2, '0').toUpperCase()}`;
+                        if (state.bitDepth === '16bit') {
+                            const u16 = (v < 0 ? v + 65536 : v) & 0xFFFF;
+                            return `0x${u16.toString(16).padStart(4, '0').toUpperCase()}`;
+                        }
+                        return v.toFixed(3);
+                    });
+                    outputText = hexArr.join(', ');
+                    break;
+                }
+                case 'c': {
+                    const hexArr = rawValues.map(v => {
+                        if (state.bitDepth === '4bit') return `0x${v.toString(16).toUpperCase()}`;
+                        return `0x${Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0').toUpperCase()}`;
+                    });
+                    outputText = `// Wavetable Data (${state.steps} Steps, ${state.bitDepth})\nconst uint8_t wave_data[${state.steps}] = {\n  ${hexArr.join(', ')}\n};`;
+                    break;
+                }
+                case 'asm': {
+                    const hexArr = rawValues.map(v => `$${v.toString(16).padStart(2, '0').toUpperCase()}`);
+                    outputText = `; Wavetable Data Assembly\nWAVE_DATA:\n  .db ${hexArr.join(', ')}`;
+                    break;
+                }
+                case 'json': {
+                    outputText = JSON.stringify(rawValues);
+                    break;
+                }
+                case 'csv': {
+                    outputText = rawValues.join(', ');
+                    break;
+                }
+            }
+
+            textarea.value = outputText;
+        }
+
+        // Code Export Copy Button
+        document.getElementById('btn-copy-code').addEventListener('click', () => {
+            const textarea = document.getElementById('code-output');
+            textarea.select();
+            document.execCommand('copy');
+
+            const btn = document.getElementById('btn-copy-code');
+            const originalHTML = btn.innerHTML;
+            btn.innerHTML = `<i data-lucide="check" class="w-3.5 h-3.5 text-emerald-400"></i> コピー完了`;
+            lucide.createIcons();
+            setTimeout(() => { btn.innerHTML = originalHTML; lucide.createIcons(); }, 1500);
+        });
+
+        // Code Download Text
+        document.getElementById('btn-download-txt').addEventListener('click', () => {
+            const text = document.getElementById('code-output').value;
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `waveform_data_${state.steps}steps.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // Data Import Action
+        document.getElementById('btn-import').addEventListener('click', () => {
+            const text = document.getElementById('import-input').value.trim();
+            if (!text) return;
+
+            try {
+                let parsed = [];
+                if (text.startsWith('[') && text.endsWith(']')) {
+                    // JSON format
+                    parsed = JSON.parse(text);
+                } else {
+                    // Hex or CSV comma separated format
+                    parsed = text.split(/[\s,]+/).map(item => {
+                        const str = item.trim();
+                        if (str.startsWith('0x') || str.startsWith('0X')) {
+                            return parseInt(str, 16);
+                        }
+                        return parseFloat(str);
+                    }).filter(n => !isNaN(n));
+                }
+
+                if (parsed.length > 0) {
+                    // Update steps if matches supported preset
+                    if ([8, 16, 32, 64, 128].includes(parsed.length)) {
+                        state.steps = parsed.length;
+                        document.getElementById('select-steps').value = state.steps;
+                    }
+
+                    state.data = new Float32Array(state.steps);
+                    const qMax = parsed.reduce((max, val) => Math.max(max, Math.abs(val)), 1);
+
+                    for (let i = 0; i < state.steps; i++) {
+                        const rawVal = parsed[i % parsed.length];
+                        let normVal = 0;
+
+                        if (state.bitDepth === '4bit') {
+                            normVal = (rawVal / 15) * 2 - 1;
+                        } else if (state.bitDepth === '8bit') {
+                            normVal = (rawVal / 255) * 2 - 1;
+                        } else if (state.bitDepth === '16bit') {
+                            normVal = rawVal / 32767;
+                        } else {
+                            normVal = rawVal / qMax;
+                        }
+
+                        state.data[i] = getQuantizedValue(normVal).norm;
+                    }
+
+                    renderCanvas();
+                    updateAudioWave();
+                    updateCodeOutput();
+                    document.getElementById('import-input').value = '';
+                }
+            } catch (err) {
+                alert('データのインポートに失敗しました。正しいフォーマットか確認してください。');
+            }
+        });
+
+        // UI Controls Events
+        document.getElementById('select-steps').addEventListener('change', (e) => {
+            state.steps = parseInt(e.target.value);
+            const oldData = state.data;
+            state.data = new Float32Array(state.steps);
+            for (let i = 0; i < state.steps; i++) {
+                state.data[i] = oldData[i % oldData.length] || 0;
+            }
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        document.getElementById('select-bitdepth').addEventListener('change', (e) => {
+            state.bitDepth = e.target.value;
+            // Re-quantize existing data
+            for (let i = 0; i < state.steps; i++) {
+                state.data[i] = getQuantizedValue(state.data[i]).norm;
+            }
+            renderCanvas();
+            updateAudioWave();
+            updateCodeOutput();
+        });
+
+        document.getElementById('select-interp').addEventListener('change', (e) => {
+            state.interpolation = e.target.value;
+            renderCanvas();
+            updateAudioWave();
+        });
+
+        // Tools toggle
+        document.getElementById('tool-pen').addEventListener('click', () => {
+            state.tool = 'pen';
+            document.getElementById('tool-pen').className = "px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition bg-cyan-500/20 text-cyan-300 border border-cyan-500/40";
+            document.getElementById('tool-line').className = "px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition text-slate-400 hover:text-slate-200";
+        });
+
+        document.getElementById('tool-line').addEventListener('click', () => {
+            state.tool = 'line';
+            document.getElementById('tool-line').className = "px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition bg-cyan-500/20 text-cyan-300 border border-cyan-500/40";
+            document.getElementById('tool-pen').className = "px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1 transition text-slate-400 hover:text-slate-200";
+        });
+
+        // Presets buttons
+        document.querySelectorAll('.btn-preset').forEach(btn => {
+            btn.addEventListener('click', () => {
+                generatePreset(btn.dataset.preset);
+            });
+        });
+
+        // Tab Navigation
+        const tabWav = document.getElementById('tab-wav');
+        const tabCode = document.getElementById('tab-code');
+        const tabBtnWav = document.getElementById('tab-btn-wav');
+        const tabBtnCode = document.getElementById('tab-btn-code');
+
+        tabBtnWav.addEventListener('click', () => {
+            tabWav.classList.remove('hidden');
+            tabCode.classList.add('hidden');
+            tabBtnWav.className = "px-2.5 py-1 text-xs rounded bg-pink-500/20 text-pink-300 border border-pink-500/40";
+            tabBtnCode.className = "px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-400 hover:text-slate-200";
+        });
+
+        tabBtnCode.addEventListener('click', () => {
+            tabCode.classList.remove('hidden');
+            tabWav.classList.add('hidden');
+            tabBtnCode.className = "px-2.5 py-1 text-xs rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40";
+            tabBtnWav.className = "px-2.5 py-1 text-xs rounded bg-slate-800 text-slate-400 hover:text-slate-200";
+        });
+
+        document.getElementById('code-format').addEventListener('change', updateCodeOutput);
+
+        // Reset Button
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            generatePreset('sine');
+        });
+
+        // Audio parameters sliders
+        document.getElementById('param-vol').addEventListener('input', (e) => {
+            state.volume = parseFloat(e.target.value);
+            document.getElementById('val-vol').innerText = `${Math.round(state.volume * 100)}%`;
+        });
+        document.getElementById('param-atk').addEventListener('input', (e) => {
+            state.attack = parseFloat(e.target.value);
+            document.getElementById('val-atk').innerText = `${Math.round(state.attack * 1000)}ms`;
+        });
+        document.getElementById('param-rel').addEventListener('input', (e) => {
+            state.release = parseFloat(e.target.value);
+            document.getElementById('val-rel').innerText = `${Math.round(state.release * 1000)}ms`;
+        });
+
+        // Initial App Startup
+        window.addEventListener('load', () => {
+            lucide.createIcons();
+            resizeCanvas();
+            renderKeyboard();
+            generatePreset('sine');
+            window.addEventListener('resize', resizeCanvas);
+        });
+    </script>
+</body>
+</html>

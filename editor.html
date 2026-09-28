@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIDI → SPC ビルダー</title>
+<style>
+:root{--bg:#14181a;--panel:#1c2225;--line:#2f393d;--ink:#e4ebe6;--dim:#8a9a93;--acc:#7fd6a0;--acc2:#e8b64c;--err:#ef7d6b}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 "Hiragino Sans","Yu Gothic UI","Noto Sans JP",system-ui,sans-serif}
+main{max-width:920px;margin:0 auto;padding:28px 18px 60px}
+h1{font-size:26px;margin:0 0 4px;letter-spacing:.02em}
+.lead{color:var(--dim);margin:0 0 26px;max-width:62ch}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:18px 20px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 12px;display:flex;align-items:baseline;gap:10px}
+h2 small{color:var(--dim);font-weight:400;font-size:13px}
+.step{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--acc);color:#0d1a12;font-weight:700;font-size:13px;flex:none}
+.drop{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+input[type=file]{color:var(--dim);max-width:100%}
+button,select,input[type=number],input[type=text]{background:#0f1315;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:6px 10px;font:inherit}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button.primary{background:var(--acc);color:#0d1a12;border-color:var(--acc);font-weight:700;padding:10px 22px;font-size:16px}
+.srow{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--line)}
+.srow:first-child{border-top:0}.sname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.smeta{color:var(--dim);font-size:13px}
+.hint{color:var(--dim);font-size:13px;margin:8px 0 0}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th{font-weight:600;text-align:left;color:var(--dim);font-size:13px;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr.empty td{opacity:.45}
+td input[type=number]{width:64px}.nn{color:var(--acc2);margin-left:8px;font-variant-numeric:tabular-nums}
+td select{max-width:220px}
+.mem{height:8px;background:#0f1315;border-radius:4px;overflow:hidden;margin-top:6px}
+#memBar{height:100%;width:0;background:var(--acc)}#memBar.over{background:var(--err)}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.meta label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}.meta input{width:100%}
+.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+.status{margin-top:12px;min-height:1.6em}.status.ok{color:var(--acc)}.status.err{color:var(--err)}
+.spec{color:var(--dim);font-size:13px}.spec li{margin:2px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>MIDI → SPC ビルダー</h1>
+<p class="lead">MIDIとサンプルを読み込み、チャンネルごとにサンプルを割り当てるとSNES用の .spc ファイルを書き出します。すべてブラウザ内で処理され、ファイルは外部に送信されません。</p>
+
+<section>
+<h2><span class="step">1</span>MIDIファイル</h2>
+<div class="drop"><input type="file" id="midiFile" accept=".mid,.midi,audio/midi"></div>
+<p class="hint" id="midiInfo">ノートのオン/オフとテンポだけを使います。チャンネル1〜8が、それぞれSNESの音声1〜8になります。</p>
+</section>
+
+<section>
+<h2><span class="step">2</span>サンプル<small>WAV / MP3 / OGG</small></h2>
+<div class="drop"><input type="file" id="sampleFile" accept="audio/*" multiple></div>
+<div id="sampleList"></div>
+<p class="hint">読み込み時に32kHzのモノラルへ変換し、BRR形式に圧縮します。短いサンプルほどメモリに余裕ができます。</p>
+</section>
+
+<section>
+<h2><span class="step">3</span>チャンネルへの割り当て</h2>
+<div class="tablewrap"><table>
+<thead><tr><th>CH</th><th>ノート数</th><th>音域</th><th>サンプル</th><th>基準ノート</th><th>ループ</th></tr></thead>
+<tbody id="mapBody"></tbody></table></div>
+<p class="hint">基準ノートは、サンプルを元の高さで鳴らすMIDIノート番号です(60 = C4)。ループをオンにすると、ノートが続く間サンプルを繰り返します。</p>
+<div class="mem"><div id="memBar"></div></div><div class="hint" id="memText"></div>
+</section>
+
+<section>
+<h2><span class="step">4</span>書き出し</h2>
+<div class="meta">
+<label>曲名<input type="text" id="title" maxlength="32" value="Untitled"></label>
+<label>作者<input type="text" id="artist" maxlength="32"></label>
+<label>ゲーム名<input type="text" id="game" maxlength="32"></label>
+<label>タイミング精度(ms)<select id="tick"><option value="2">2 ms(細かい)</option><option value="4" selected>4 ms</option><option value="8">8 ms</option><option value="16">16 ms(粗い)</option></select></label>
+</div>
+<div class="actions">
+<button class="primary" id="build">SPCをダウンロード</button>
+<button id="pvSong">MIDIを試聴</button><button id="pvStop">停止</button>
+</div>
+<div id="status" class="status" role="status" aria-live="polite"></div>
+</section>
+
+<section>
+<h2>仕様と制限</h2>
+<ul class="spec">
+<li>1チャンネルにつき1サンプル、同時発音は1音(和音は後の音が前の音を止めます)</li>
+<li>使うMIDI情報はノートのオン/オフとテンポのみ。ベロシティ・パン・ピッチベンド等は無視</li>
+<li>エンベロープと音量は固定値。BRRはフィルタなしの簡易エンコード</li>
+<li>「MIDIを試聴」はブラウザ上の近似再生で、実際のSNES音源とは音色が少し異なります</li>
+</ul>
+</section>
+</main>
+<script>
+class Assembler {
+  constructor(origin) {
+    this.origin = origin;
+    this.ops = [];
+    this.labels = {};
+    this.pos = origin;
+  }
+
+  label(name) { this.labels[name] = this.pos; }
+  _push(bytes) { this.ops.push({ bytes, addr: this.pos }); this.pos += bytes.length; }
+  db(...bytes) { this._push(bytes); }
+  dw(word) { this._push([word & 0xFF, (word >> 8) & 0xFF]); }
+
+  nop() { this._push([0x00]); }
+  sleep() { this._push([0xEF]); }
+  stop() { this._push([0xFF]); }
+  di() { this._push([0xC0]); }
+  ei() { this._push([0xA0]); }
+  clrp() { this._push([0x20]); }
+  setp() { this._push([0x40]); }
+  clrc() { this._push([0x60]); }
+  setc() { this._push([0x80]); }
+
+  movA_imm(v) { this._push([0xE8, v & 0xFF]); }
+  movX_imm(v) { this._push([0xCD, v & 0xFF]); }
+  movY_imm(v) { this._push([0x8D, v & 0xFF]); }
+
+  movA_dp(dp) { this._push([0xE4, dp & 0xFF]); }
+  movX_dp(dp) { this._push([0xF8, dp & 0xFF]); }
+  movY_dp(dp) { this._push([0xEB, dp & 0xFF]); }
+  movA_dpX(dp) { this._push([0xF4, dp & 0xFF]); }
+
+  movDp_A(dp) { this._push([0xC4, dp & 0xFF]); }
+  movDp_X(dp) { this._push([0xD8, dp & 0xFF]); }
+  movDp_Y(dp) { this._push([0xCB, dp & 0xFF]); }
+  movDpX_A(dp) { this._push([0xD4, dp & 0xFF]); }
+  movDpY_X(dp) { this._push([0xD9, dp & 0xFF]); }
+  movDpX_Y(dp) { this._push([0xDB, dp & 0xFF]); }
+
+  movDp_imm(dp, v) { this._push([0x8F, v & 0xFF, dp & 0xFF]); }
+
+  movA_abs(addr) { this._push([0xE5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movAbs_A(addr) { this._push([0xC5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movA_absX(addr) { this._push([0xF5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movAbsX_A(addr) { this._push([0xD5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movA_absY(addr) { this._push([0xF6, addr & 0xFF, (addr >> 8) & 0xFF]); }
+
+  movA_X() { this._push([0x7D]); }
+  movA_Y() { this._push([0xDD]); }
+  movX_A() { this._push([0x5D]); }
+  movY_A() { this._push([0xFD]); }
+  movSP_X() { this._push([0xBD]); }
+  movX_SP() { this._push([0x9D]); }
+
+  movYA_dp(dp) { this._push([0xBA, dp & 0xFF]); }
+  movDp_YA(dp) { this._push([0xDA, dp & 0xFF]); }
+
+  movA_indX() { this._push([0xE6]); }
+  movIndX_A() { this._push([0xC6]); }
+  movIndXInc_A() { this._push([0xAF]); }
+  movA_indXInc() { this._push([0xBF]); }
+
+  incA() { this._push([0xBC]); }
+  decA() { this._push([0x9C]); }
+  incX() { this._push([0x3D]); }
+  decX() { this._push([0x1D]); }
+  incY() { this._push([0xFC]); }
+  decY() { this._push([0xDC]); }
+  incDp(dp) { this._push([0xAB, dp & 0xFF]); }
+  decDp(dp) { this._push([0x8B, dp & 0xFF]); }
+
+  cmpA_imm(v) { this._push([0x68, v & 0xFF]); }
+  cmpA_dp(dp) { this._push([0x64, dp & 0xFF]); }
+  cmpX_imm(v) { this._push([0xC8, v & 0xFF]); }
+  cmpY_imm(v) { this._push([0xAD, v & 0xFF]); }
+
+  andA_imm(v) { this._push([0x28, v & 0xFF]); }
+  orA_imm(v) { this._push([0x08, v & 0xFF]); }
+  orDp_dp(dst, src) { this._push([0x09, src & 0xFF, dst & 0xFF]); }
+
+  _branch(opcode, labelName) {
+    const op = { size: 2, addr: this.pos, branch: { opcode, labelName } };
+    this.ops.push(op);
+    this.pos += 2;
+  }
+
+  bra(label) { this._branch(0x2F, label); }
+  beq(label) { this._branch(0xF0, label); }
+  bne(label) { this._branch(0xD0, label); }
+  bcs(label) { this._branch(0xB0, label); }
+  bcc(label) { this._branch(0x90, label); }
+  bmi(label) { this._branch(0x30, label); }
+  bpl(label) { this._branch(0x10, label); }
+
+  call(labelOrAddr) {
+    if (typeof labelOrAddr === 'string') {
+      const op = { size: 3, addr: this.pos, callLabel: labelOrAddr };
+      this.ops.push(op);
+      this.pos += 3;
+    } else {
+      this._push([0x3F, labelOrAddr & 0xFF, (labelOrAddr >> 8) & 0xFF]);
+    }
+  }
+
+  ret() { this._push([0x6F]); }
+
+  assemble() {
+    const labels = this.labels;
+    const bytes = [];
+    for (const op of this.ops) {
+      if (op.bytes) {
+        bytes.push(...op.bytes);
+      } else if (op.branch) {
+        const target = labels[op.branch.labelName];
+        if (target === undefined) throw new Error('Unknown label: ' + op.branch.labelName);
+        const nextAddr = op.addr + 2;
+        const rel = target - nextAddr;
+        if (rel < -128 || rel > 127) throw new Error('Branch out of range to ' + op.branch.labelName + ' rel=' + rel);
+        bytes.push(op.branch.opcode, rel & 0xFF);
+      } else if (op.callLabel) {
+        const target = labels[op.callLabel];
+        if (target === undefined) throw new Error('Unknown label: ' + op.callLabel);
+        bytes.push(0x3F, target & 0xFF, (target >> 8) & 0xFF);
+      } else {
+        throw new Error('Unresolved op');
+      }
+    }
+    return { bytes: new Uint8Array(bytes), labels, endAddr: this.pos };
+  }
+}
+
+const DSP = {
+  VOL_L: 0x00, VOL_R: 0x01, PITCH_L: 0x02, PITCH_H: 0x03, SRCN: 0x04,
+  ADSR1: 0x05, ADSR2: 0x06, GAIN: 0x07, ENVX: 0x08, OUTX: 0x09,
+  MVOL_L: 0x0C, MVOL_R: 0x1C, EVOL_L: 0x2C, EVOL_R: 0x3C,
+  KON: 0x4C, KOFF: 0x5C, FLG: 0x6C, ENDX: 0x7C,
+  EFB: 0x0D, PMON: 0x2D, NON: 0x3D, EON: 0x4D, DIR: 0x5D, ESA: 0x6D, EDL: 0x7D,
+};
+
+const IO = {
+  TEST: 0xF0, CONTROL: 0xF1,
+  DSPADDR: 0xF2, DSPDATA: 0xF3,
+  T0TARGET: 0xFA, T1TARGET: 0xFB, T2TARGET: 0xFC,
+  T0OUT: 0xFD, T1OUT: 0xFE, T2OUT: 0xFF,
+};
+
+const NUM_VOICES = 8;
+
+function zpFor(voice) {
+  const base = 0x10 + voice * 6;
+  return {
+    ptrLo: base + 0,
+    ptrHi: base + 1,
+    delay: base + 2,
+    baseNote: base + 3,
+    curNote: base + 4,
+    spare: base + 5,
+  };
+}
+
+const ZG = {
+  pitchLo: 0x00,
+  pitchHi: 0x01,
+  tickPending: 0x02,
+  scratch: 0x03,
+  scratch2: 0x04,
+};
+
+function pitchForNote(note, baseNote) {
+  const ratio = Math.pow(2, (note - baseNote) / 12);
+  let p = Math.round(0x1000 * ratio);
+  if (p < 1) p = 1;
+  if (p > 0x3FFF) p = 0x3FFF;
+  return p;
+}
+
+function buildDriver(Assembler, opts) {
+  const origin = opts.origin;
+  const dirPage = opts.dirPage;
+  const pitchTableAddrs = opts.pitchTableAddrs;
+  const srcn = opts.srcn;
+  const streamAddrs = opts.streamAddrs;
+  const t0Target = opts.t0Target;
+
+  const a = new Assembler(origin);
+  const zp = [];
+  for (let v = 0; v < NUM_VOICES; v++) zp.push(zpFor(v));
+
+  a.label('start');
+  a.di();
+  a.clrp();
+  a.movX_imm(0xFF);
+  a.movSP_X();
+
+  a.movA_imm(0x00);
+  a.movDp_A(IO.CONTROL);
+
+  const setDsp = (reg, val) => {
+    a.movA_imm(reg);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(val);
+    a.movDp_A(IO.DSPDATA);
+  };
+  setDsp(DSP.FLG, 0x20);
+  setDsp(DSP.KOFF, 0x00); // 修正: 初期化時はKOFFをクリア
+  setDsp(DSP.KON, 0x00);
+  setDsp(DSP.MVOL_L, 0x7F);
+  setDsp(DSP.MVOL_R, 0x7F);
+  setDsp(DSP.EVOL_L, 0x00);
+  setDsp(DSP.EVOL_R, 0x00);
+  setDsp(DSP.NON, 0x00);
+  setDsp(DSP.EON, 0x00);
+  setDsp(DSP.PMON, 0x00);
+  setDsp(DSP.EDL, 0x00);
+  setDsp(DSP.DIR, dirPage & 0xFF);
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const b = v << 4;
+    setDsp(b | DSP.VOL_L, 0x7F);
+    setDsp(b | DSP.VOL_R, 0x7F);
+    setDsp(b | DSP.ADSR1, 0b1_111_1111); // AR=15, DR=7
+    setDsp(b | DSP.ADSR2, 0b111_00000);  // 修正: SL=7 (100%), SR=0 (減衰なし)
+    setDsp(b | DSP.SRCN, srcn[v] & 0xFF);
+  }
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const z = zp[v];
+    const addr = streamAddrs[v];
+    a.movA_imm(addr & 0xFF);
+    a.movDp_A(z.ptrLo);
+    a.movA_imm((addr >> 8) & 0xFF);
+    a.movDp_A(z.ptrHi);
+    a.movA_imm(opts.firstDelays[v] & 0xFF);
+    a.movDp_A(z.delay);
+    a.movA_imm(opts.baseNotes[v] & 0xFF);
+    a.movDp_A(z.baseNote);
+    a.movA_imm(0xFF);
+    a.movDp_A(z.curNote);
+  }
+
+  a.movA_imm(t0Target & 0xFF);
+  a.movDp_A(IO.T0TARGET);
+  a.movA_imm(0x01);
+  a.movDp_A(IO.CONTROL);
+  a.ei();
+
+  a.label('main_loop');
+  a.movA_dp(IO.T0OUT);
+  a.beq('main_loop');
+  a.movDp_A(ZG.tickPending);
+
+  a.label('tick_loop');
+  for (let v = 0; v < NUM_VOICES; v++) {
+    a.call('voice' + v + '_tick');
+  }
+  a.decDp(ZG.tickPending);
+  a.movA_dp(ZG.tickPending);
+  a.bne('tick_loop');
+  a.bra('main_loop');
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const z = zp[v];
+    const voiceRegBase = v << 4;
+    const pt = pitchTableAddrs[v];
+
+    a.label('voice' + v + '_tick');
+    a.movA_dp(z.delay);
+    a.beq('voice' + v + '_fire');
+    a.decDp(z.delay);
+    a.ret();
+
+    a.label('voice' + v + '_fire');
+    a.movY_imm(0x01);
+    a._push([0xF7, z.ptrLo]);
+    a.movDp_A(ZG.scratch);
+    a.movY_imm(0x02);
+    a._push([0xF7, z.ptrLo]);
+    a.movDp_A(ZG.scratch2);
+
+    a.cmpA_imm(3);
+    a.bne('voice' + v + '_notend');
+    a.movA_imm(0xFE);
+    a.movDp_A(z.delay);
+    a.ret();
+    a.label('voice' + v + '_notend');
+
+    a.movA_dp(z.ptrLo);
+    a.incA(); a.incA(); a.incA();
+    a.movDp_A(z.ptrLo);
+    a.cmpA_imm(0x03);
+    a.bcs('voice' + v + '_noborrow');
+    a.incDp(z.ptrHi);
+    a.label('voice' + v + '_noborrow');
+
+    a.movY_imm(0x00);
+    a._push([0xF7, z.ptrLo]);
+    a.movDp_A(z.delay);
+
+    a.movA_dp(ZG.scratch2);
+    a.cmpA_imm(1);
+    a.beq('voice' + v + '_kon');
+    a.cmpA_imm(0);
+    a.beq('voice' + v + '_koff');
+    a.bra('voice' + v + '_donefire');
+
+    a.label('voice' + v + '_kon');
+    // 修正: Key On の前にまず該当チャンネルの KOFF フラグをクリア
+    a.movA_imm(DSP.KOFF);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(0);
+    a.movDp_A(IO.DSPDATA);
+
+    a.movY_dp(ZG.scratch);
+    a.movA_absY(pt.lo);
+    a.movDp_A(ZG.pitchLo);
+    a.movY_dp(ZG.scratch);
+    a.movA_absY(pt.hi);
+    a.movDp_A(ZG.pitchHi);
+
+    a.movA_imm(voiceRegBase | DSP.PITCH_L);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_dp(ZG.pitchLo);
+    a.movDp_A(IO.DSPDATA);
+    a.movA_imm(voiceRegBase | DSP.PITCH_H);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_dp(ZG.pitchHi);
+    a.movDp_A(IO.DSPDATA);
+
+    a.movA_imm(DSP.KON);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(1 << v);
+    a.movDp_A(IO.DSPDATA);
+    a.bra('voice' + v + '_donefire');
+
+    a.label('voice' + v + '_koff');
+    a.movA_imm(DSP.KOFF);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(1 << v);
+    a.movDp_A(IO.DSPDATA);
+    a.bra('voice' + v + '_donefire');
+
+    a.label('voice' + v + '_donefire');
+    a.ret();
+  }
+
+  return a.assemble();
+}
+
+function encodeBRR(samples, loop) {
+  const nBlocks = Math.ceil(samples.length / 16);
+  const padded = new Int16Array(nBlocks * 16);
+  padded.set(samples);
+
+  const out = [];
+  for (let b = 0; b < nBlocks; b++) {
+    const block = padded.subarray(b * 16, b * 16 + 16);
+    const isLast = (b === nBlocks - 1);
+    const { shift, nibbles } = bestShiftForBlock(block);
+
+    let header = (shift & 0x0F) << 4;
+    if (isLast) {
+      header |= 0x01;
+      if (loop) header |= 0x02;
+    } else if (loop) {
+      header |= 0x02;
+    }
+    out.push(header);
+    for (let i = 0; i < 16; i += 2) {
+      const hi = nibbles[i] & 0x0F;
+      const lo = nibbles[i + 1] & 0x0F;
+      out.push((hi << 4) | lo);
+    }
+  }
+  return { bytes: new Uint8Array(out), blockCount: nBlocks };
+}
+
+function bestShiftForBlock(block) {
+  for (let shift = 0; shift <= 12; shift++) {
+    const step = shift === 0 ? 0.5 : (1 << (shift - 1));
+    let fits = true;
+    for (let i = 0; i < 16; i++) {
+      const n = Math.round(block[i] / step);
+      if (n > 7 || n < -8) { fits = false; break; }
+    }
+    if (fits || shift === 12) {
+      const nibbles = new Int8Array(16);
+      for (let i = 0; i < 16; i++) {
+        let n = Math.round(block[i] / step);
+        if (n > 7) n = 7;
+        if (n < -8) n = -8;
+        nibbles[i] = n;
+      }
+      return { shift, nibbles };
+    }
+  }
+  return { shift: 12, nibbles: new Int8Array(16) };
+}
+
+function parseMidi(arrayBuffer) {
+  const data = new DataView(arrayBuffer);
+  let pos = 0;
+
+  function readU32() { const v = data.getUint32(pos); pos += 4; return v; }
+  function readU16() { const v = data.getUint16(pos); pos += 2; return v; }
+  function readU8() { const v = data.getUint8(pos); pos += 1; return v; }
+  function readStr(n) { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(readU8()); return s; }
+
+  const headerId = readStr(4);
+  if (headerId !== 'MThd') throw new Error('Not a valid MIDI file (missing MThd)');
+  const headerLen = readU32();
+  const format = readU16();
+  const numTracks = readU16();
+  const division = readU16();
+  if (division & 0x8000) {
+    throw new Error('SMPTE time division not supported');
+  }
+  pos += (headerLen - 6);
+
+  const tracks = [];
+  for (let t = 0; t < numTracks && pos < data.byteLength; t++) {
+    const trackId = readStr(4);
+    const trackLen = readU32();
+    const trackEnd = pos + trackLen;
+    if (trackId !== 'MTrk') {
+      pos = trackEnd;
+      continue;
+    }
+    const events = [];
+    let absTick = 0;
+    let runningStatus = 0;
+
+    function readVarLen() {
+      let value = 0;
+      let byte;
+      do {
+        byte = readU8();
+        value = (value << 7) | (byte & 0x7F);
+      } while (byte & 0x80);
+      return value;
+    }
+
+    while (pos < trackEnd) {
+      const delta = readVarLen();
+      absTick += delta;
+      let statusByte = readU8();
+      if (statusByte < 0x80) {
+        pos -= 1;
+        statusByte = runningStatus;
+      } else {
+        runningStatus = statusByte;
+      }
+
+      if (statusByte === 0xFF) {
+        const metaType = readU8();
+        const len = readVarLen();
+        const metaStart = pos;
+        if (metaType === 0x51 && len === 3) {
+          const usPerQuarter = (readU8() << 16) | (readU8() << 8) | readU8();
+          events.push({ absTick, type: 'tempo', usPerQuarter });
+        } else {
+          pos = metaStart + len;
+        }
+        pos = metaStart + len;
+      } else if (statusByte === 0xF0 || statusByte === 0xF7) {
+        const len = readVarLen();
+        pos += len;
+      } else {
+        const type = statusByte & 0xF0;
+        const channel = statusByte & 0x0F;
+        if (type === 0x80) {
+          const note = readU8();
+          const vel = readU8();
+          events.push({ absTick, type: 'noteOff', channel, note, velocity: vel });
+        } else if (type === 0x90) {
+          const note = readU8();
+          const vel = readU8();
+          if (vel === 0) {
+            events.push({ absTick, type: 'noteOff', channel, note, velocity: 0 });
+          } else {
+            events.push({ absTick, type: 'noteOn', channel, note, velocity: vel });
+          }
+        } else if (type === 0xA0 || type === 0xB0 || type === 0xE0) {
+          readU8(); readU8();
+        } else if (type === 0xC0 || type === 0xD0) {
+          readU8();
+        } else {
+          pos = trackEnd;
+          break;
+        }
+      }
+    }
+    pos = trackEnd;
+    tracks.push(events);
+  }
+
+  return { format, numTracks, division, tracks };
+}
+
+function midiToTimedEvents(parsed) {
+  const division = parsed.division;
+  let all = [];
+  for (const track of parsed.tracks) {
+    for (const ev of track) all.push(ev);
+  }
+  all.sort((a, b) => a.absTick - b.absTick);
+
+  let usPerQuarter = 500000;
+  let lastTick = 0;
+  let lastTimeSec = 0;
+  const out = [];
+
+  for (const ev of all) {
+    const deltaTicks = ev.absTick - lastTick;
+    const deltaSec = (deltaTicks / division) * (usPerQuarter / 1e6);
+    lastTimeSec += deltaSec;
+    lastTick = ev.absTick;
+
+    if (ev.type === 'tempo') {
+      usPerQuarter = ev.usPerQuarter;
+    } else {
+      out.push({ timeSec: lastTimeSec, type: ev.type, channel: ev.channel, note: ev.note, velocity: ev.velocity });
+    }
+  }
+  return out;
+}
+
+function buildEventStreamForChannel(events, tickMs) {
+  const bytes = [];
+  let lastTick = 0;
+
+  function emitDelay(deltaTicks, note, gate) {
+    let remaining = Math.max(0, deltaTicks - 1);
+    while (remaining > 254) {
+      bytes.push(254, 0, 2);
+      remaining -= 255;
+    }
+    if (remaining < 0) remaining = 0;
+    bytes.push(remaining, note & 0x7F, gate);
+  }
+
+  for (const ev of events) {
+    const tickAbs = Math.round((ev.timeSec * 1000) / tickMs);
+    const delta = Math.max(0, tickAbs - lastTick);
+    if (ev.type === 'noteOn') {
+      emitDelay(delta, ev.note, 1);
+    } else if (ev.type === 'noteOff') {
+      emitDelay(delta, ev.note, 0);
+    }
+    lastTick = Math.max(lastTick, tickAbs);
+  }
+  bytes.push(0, 0, 3);
+  return new Uint8Array(bytes);
+}
+
+function groupEventsByChannel(timedEvents, numVoices) {
+  const byChannel = Array.from({ length: numVoices }, () => []);
+  for (const ev of timedEvents) {
+    if (ev.channel < numVoices) {
+      byChannel[ev.channel].push(ev);
+    }
+  }
+  return byChannel;
+}
+
+const HEADER_MAGIC = 'SNES-SPC700 Sound File Data v0.30';
+
+function buildSpcFile({ ram, dsp, pc, a = 0, x = 0, y = 0, psw = 0x02, sp = 0xEF, title = '', artist = '', game = '' }) {
+  const buf = new Uint8Array(0x10200);
+  const view = new DataView(buf.buffer);
+
+  writeAscii(buf, 0, HEADER_MAGIC);
+  buf[0x21] = 0x1A;
+  buf[0x22] = 0x1A;
+  buf[0x23] = 26;
+  buf[0x24] = 30;
+
+  view.setUint16(0x25, pc & 0xFFFF, true);
+  buf[0x27] = a & 0xFF;
+  buf[0x28] = x & 0xFF;
+  buf[0x29] = y & 0xFF;
+  buf[0x2A] = psw & 0xFF;
+  buf[0x2B] = sp & 0xFF;
+
+  writeAscii(buf, 0x2E, title.slice(0, 32));
+  writeAscii(buf, 0x4E, game.slice(0, 32));
+  writeAscii(buf, 0x6E, 'spc-builder'.slice(0, 16));
+  writeAscii(buf, 0x7E, ''.slice(0, 32));
+  writeAscii(buf, 0x9E, '20260101');
+  writeAscii(buf, 0xA9, '');
+  writeAscii(buf, 0xAC, '');
+  writeAscii(buf, 0xB1, artist.slice(0, 32));
+  buf[0xD1] = 0;
+  buf[0xD2] = 0;
+
+  buf.set(ram, 0x100);
+  buf.set(dsp, 0x10100);
+
+  return buf;
+}
+
+function writeAscii(buf, offset, str) {
+  for (let i = 0; i < str.length; i++) {
+    buf[offset + i] = str.charCodeAt(i) & 0xFF;
+  }
+}
+
+function buildSpcFromProject({ midiArrayBuffer, samples, mapping, tickMs, title, artist, game }) {
+  const NUM_VOICES = 8;
+  const parsed = parseMidi(midiArrayBuffer);
+  const timed = midiToTimedEvents(parsed);
+  const byChannel = groupEventsByChannel(timed, NUM_VOICES);
+
+  const ram = new Uint8Array(0x10000);
+  const DIR_ADDR = 0x0200;
+  const DRIVER_ORIGIN = 0x0300;
+  const PITCH_BASE = 0x0A00;
+  const SAMPLE_BASE = 0x1A00;
+  const LIMIT = 0xFF00;
+
+  const usedIdx = [];
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const m = mapping[v];
+    if (m && m.sampleIndex >= 0 && !usedIdx.includes(m.sampleIndex)) usedIdx.push(m.sampleIndex);
+  }
+  if (usedIdx.length === 0) throw new Error('サンプルが1つもマッピングされていません');
+  if (usedIdx.length > 8) throw new Error('サンプルは最大8個までです');
+
+  let cursor = SAMPLE_BASE;
+  const dirIndexOf = {};
+  const sampleInfo = [];
+  usedIdx.forEach((si, dirIdx) => {
+    const loop = mapping.some(m => m && m.sampleIndex === si && m.loop);
+    const { bytes } = encodeBRR(samples[si].pcm, loop);
+    if (cursor + bytes.length > LIMIT) throw new Error('サンプルの合計サイズがSPC RAM(64KB)に収まりません。サンプルを短くしてください');
+    ram.set(bytes, cursor);
+    const start = cursor;
+    const loopStart = start;
+    ram[DIR_ADDR + dirIdx * 4 + 0] = start & 0xFF;
+    ram[DIR_ADDR + dirIdx * 4 + 1] = start >> 8;
+    ram[DIR_ADDR + dirIdx * 4 + 2] = loopStart & 0xFF;
+    ram[DIR_ADDR + dirIdx * 4 + 3] = loopStart >> 8;
+    dirIndexOf[si] = dirIdx;
+    sampleInfo.push({ name: samples[si].name, bytes: bytes.length, addr: start });
+    cursor += bytes.length;
+  });
+
+  const pitchTableAddrs = [], streamAddrs = [], srcn = [], baseNotes = [], streamBytes = [];
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const m = mapping[v];
+    const root = m && m.sampleIndex >= 0 ? m.rootNote : 60;
+    baseNotes.push(root);
+    srcn.push(m && m.sampleIndex >= 0 ? dirIndexOf[m.sampleIndex] : 0);
+    const lo = PITCH_BASE + v * 0x200, hi = lo + 0x100;
+    pitchTableAddrs.push({ lo, hi });
+    for (let n = 0; n < 128; n++) {
+      const p = pitchForNote(n, root);
+      ram[lo + n] = p & 0xFF; ram[hi + n] = p >> 8;
+    }
+    const evs = (m && m.sampleIndex >= 0) ? byChannel[v] : [];
+    streamBytes.push(buildEventStreamForChannel(evs, tickMs));
+  }
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const st = streamBytes[v];
+    if (cursor + st.length > LIMIT) throw new Error('曲データ+サンプルがSPC RAM(64KB)に収まりません。サンプルを短くするかノート数を減らしてください');
+    ram.set(st, cursor);
+    streamAddrs.push(cursor);
+    cursor += st.length;
+  }
+
+  const { bytes: drv, labels } = buildDriver(Assembler, {
+    origin: DRIVER_ORIGIN, dirPage: DIR_ADDR >> 8, pitchTableAddrs, srcn, streamAddrs,
+    t0Target: Math.round(tickMs / 1000 * 8000), baseNotes,
+    firstDelays: streamBytes.map(st => st[0]),
+  });
+  if (DRIVER_ORIGIN + drv.length > PITCH_BASE) throw new Error('driver overflow');
+  ram.set(drv, DRIVER_ORIGIN);
+
+  const dsp = new Uint8Array(128);
+  dsp[0x6C] = 0x20; dsp[0x5D] = DIR_ADDR >> 8;
+  const spc = buildSpcFile({ ram, dsp, pc: labels['start'], title, artist, game });
+  return { spc, sampleInfo, used: cursor, events: byChannel.map(e => e.length) };
+}
+
+const $ = s => document.querySelector(s);
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const noteName = n => NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
+const state = { midi: null, midiBuf: null, midiName: '', channels: [], samples: [], mapping: Array.from({length: 8}, () => ({ sampleIndex: -1, rootNote: 60, loop: false })), lastSpc: null };
+
+function log(msg, kind) {
+  const el = $('#status');
+  el.textContent = msg; el.className = 'status ' + (kind || '');
+}
+
+async function decodeToPcm32k(file) {
+  const ab = await file.arrayBuffer();
+  const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, 32000);
+  const buf = await new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej));
+  const len = Math.max(16, Math.ceil(buf.duration * 32000));
+  const off = new OfflineAudioContext(1, len, 32000);
+  const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+  const out = await off.startRendering();
+  const f = out.getChannelData(0);
+  let peak = 0; for (let i = 0; i < f.length; i++) peak = Math.max(peak, Math.abs(f[i]));
+  const g = peak > 0 ? 0.9 / peak : 1;
+  const pcm = new Int16Array(f.length);
+  for (let i = 0; i < f.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(f[i] * g * 32767)));
+  return pcm;
+}
+
+async function loadMidi(file) {
+  const ab = await file.arrayBuffer();
+  const parsed = parseMidi(ab);
+  const timed = midiToTimedEvents(parsed);
+  const chans = Array.from({ length: 16 }, () => ({ notes: 0, min: 127, max: 0 }));
+  timed.forEach(e => { if (e.type === 'noteOn') { const c = chans[e.channel]; c.notes++; c.min = Math.min(c.min, e.note); c.max = Math.max(c.max, e.note); } });
+  state.midiBuf = ab; state.midiName = file.name; state.channels = chans;
+  state.duration = timed.length ? timed[timed.length - 1].timeSec : 0;
+  
+  // 修正: サンプルが既に読込済みなら自動割り当てを実行
+  chans.slice(0, 8).forEach((c, i) => {
+    if (c.notes) {
+      state.mapping[i].rootNote = Math.round((c.min + c.max) / 2);
+      if (state.mapping[i].sampleIndex < 0 && state.samples.length > 0) {
+        state.mapping[i].sampleIndex = 0;
+      }
+    }
+  });
+  const dropped = chans.slice(8).reduce((a, c) => a + c.notes, 0);
+  $('#midiInfo').textContent = `${file.name} — ${state.duration.toFixed(1)}秒` + (dropped ? ` / CH9以降のノート${dropped}個は無視されます` : '');
+  renderMapping();
+}
+
+async function addSamples(files) {
+  for (const f of files) {
+    try {
+      const pcm = await decodeToPcm32k(f);
+      state.samples.push({ name: f.name, pcm });
+    } catch (e) { log(`${f.name} を読み込めませんでした: ${e.message || e}`, 'err'); }
+  }
+  if (state.samples.length) state.mapping.forEach((m, i) => { if (m.sampleIndex < 0 && state.channels[i] && state.channels[i].notes) m.sampleIndex = 0; });
+  renderSamples(); renderMapping();
+}
+
+function renderSamples() {
+  const box = $('#sampleList'); box.innerHTML = '';
+  state.samples.forEach((s, i) => {
+    const row = document.createElement('div'); row.className = 'srow';
+    const kb = Math.ceil(s.pcm.length / 16) * 9 / 1024;
+    row.innerHTML = `<span class="sname"></span><span class="smeta">${(s.pcm.length / 32000).toFixed(2)}秒 · BRR ${kb.toFixed(1)}KB</span>`;
+    row.querySelector('.sname').textContent = s.name;
+    const play = document.createElement('button'); play.textContent = '試聴'; play.onclick = () => previewSample(i);
+    const del = document.createElement('button'); del.textContent = '削除'; del.onclick = () => {
+      state.samples.splice(i, 1);
+      state.mapping.forEach(m => { if (m.sampleIndex === i) m.sampleIndex = -1; else if (m.sampleIndex > i) m.sampleIndex--; });
+      renderSamples(); renderMapping();
+    };
+    row.append(play, del); box.append(row);
+  });
+  updateMem();
+}
+
+function renderMapping() {
+  const box = $('#mapBody'); box.innerHTML = '';
+  for (let ch = 0; ch < 8; ch++) {
+    const m = state.mapping[ch], info = state.channels[ch] || { notes: 0 };
+    const tr = document.createElement('tr'); if (!info.notes) tr.className = 'empty';
+    const range = info.notes ? `${noteName(info.min)}–${noteName(info.max)}` : '—';
+    tr.innerHTML = `<td>${ch + 1}</td><td>${info.notes || 0}</td><td>${range}</td><td></td><td></td><td></td>`;
+    const sel = document.createElement('select');
+    sel.innerHTML = '<option value="-1">(無音)</option>' + state.samples.map((s, i) => `<option value="${i}">${s.name.replace(/</g, '&lt;')}</option>`).join('');
+    sel.value = m.sampleIndex; sel.onchange = () => { m.sampleIndex = +sel.value; updateMem(); };
+    const root = document.createElement('input'); root.type = 'number'; root.min = 0; root.max = 127; root.value = m.rootNote;
+    root.oninput = () => { m.rootNote = Math.max(0, Math.min(127, +root.value || 0)); lbl.textContent = noteName(m.rootNote); };
+    const lbl = document.createElement('span'); lbl.className = 'nn'; lbl.textContent = noteName(m.rootNote);
+    const loop = document.createElement('input'); loop.type = 'checkbox'; loop.checked = m.loop; loop.onchange = () => { m.loop = loop.checked; };
+    const tds = tr.querySelectorAll('td');
+    tds[3].append(sel); tds[4].append(root, lbl); tds[5].append(loop);
+    box.append(tr);
+  }
+  updateMem();
+}
+
+function updateMem() {
+  const used = new Set(state.mapping.filter(m => m.sampleIndex >= 0).map(m => m.sampleIndex));
+  let bytes = 0; used.forEach(i => { if (state.samples[i]) bytes += Math.ceil(state.samples[i].pcm.length / 16) * 9; });
+  const cap = 0xFF00 - 0x1A00 - 3000;
+  const pct = Math.min(100, bytes / cap * 100);
+  $('#memBar').style.width = pct + '\%'; $('#memBar').className = pct > 95 ? 'over' : '';
+  $('#memText').textContent = `サンプルメモリ ${(bytes / 1024).toFixed(1)} / 約${(cap / 1024).toFixed(0)} KB`;
+}
+
+let actx = null;
+function ac() { return actx || (actx = new (window.AudioContext || window.webkitAudioContext)()); }
+function pcmBuffer(pcm) { const b = ac().createBuffer(1, pcm.length, 32000); const d = b.getChannelData(0); for (let i = 0; i < pcm.length; i++) d[i] = pcm[i] / 32768; return b; }
+function previewSample(i) { const s = ac().createBufferSource(); s.buffer = pcmBuffer(state.samples[i].pcm); s.connect(ac().destination); s.start(); }
+
+let playing = [];
+function stopPreview() { playing.forEach(n => { try { n.stop(); } catch (e) {} }); playing = []; }
+function previewSong() {
+  stopPreview();
+  if (!state.midiBuf) return log('先にMIDIを読み込んでください', 'err');
+  const timed = midiToTimedEvents(parseMidi(state.midiBuf));
+  const t0 = ac().currentTime + 0.1;
+  const active = {};
+  const tickMs = +$('#tick').value;
+  timed.forEach(e => {
+    if (e.channel > 7) return; const m = state.mapping[e.channel]; if (m.sampleIndex < 0) return;
+    const t = t0 + Math.round(e.timeSec * 1000 / tickMs) * tickMs / 1000;
+    if (e.type === 'noteOn') {
+      if (active[e.channel]) { try { active[e.channel].stop(t); } catch (x) {} }
+      const s = ac().createBufferSource(); s.buffer = pcmBuffer(state.samples[m.sampleIndex].pcm);
+      s.loop = m.loop; s.playbackRate.value = Math.pow(2, (e.note - m.rootNote) / 12);
+      const g = ac().createGain(); g.gain.value = 0.35; s.connect(g).connect(ac().destination);
+      s.start(t); active[e.channel] = s; playing.push(s);
+    } else if (active[e.channel]) { try { active[e.channel].stop(t + 0.02); } catch (x) {} active[e.channel] = null; }
+  });
+}
+
+function build() {
+  try {
+    if (!state.midiBuf) throw new Error('MIDIファイルを読み込んでください');
+    const r = buildSpcFromProject({
+      midiArrayBuffer: state.midiBuf, samples: state.samples, mapping: state.mapping,
+      tickMs: +$('#tick').value, title: $('#title').value, artist: $('#artist').value, game: $('#game').value,
+    });
+    const blob = new Blob([r.spc], { type: 'application/octet-stream' });
+    const base = (state.midiName || 'song').replace(/\.[^.]+$/, '');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = base + '.spc'; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    log(`${base}.spc を書き出しました(RAM使用 ${(r.used / 1024).toFixed(1)}KB / 64KB)`, 'ok');
+  } catch (e) { log(e.message || String(e), 'err'); }
+}
+
+$('#midiFile').onchange = async e => { if (e.target.files[0]) { try { await loadMidi(e.target.files[0]); } catch (x) { log('MIDIを読み込めませんでした: ' + x.message, 'err'); } } };
+$('#sampleFile').onchange = async e => { await addSamples([...e.target.files]); e.target.value = ''; };
+$('#build').onclick = build; $('#pvSong').onclick = previewSong; $('#pvStop').onclick = stopPreview;
+renderMapping();
+</script>
+</body>
+</html>
