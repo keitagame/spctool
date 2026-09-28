@@ -326,6 +326,19 @@ const exportWavBtn = document.createElement("button");
     document.querySelectorAll(".sample-row.playing").forEach(r => r.classList.remove("playing"));
   }
 
+  // プレビュー再生情報を得る(置換済みならその結果、なければ元サンプル)
+  function getPreviewInfo(s) {
+    if (s.replacement && s.replacement.previewPcm) {
+      return {
+        pcm: s.replacement.previewPcm,
+        loop: s.hasLoop,
+        loopStartSample: s.replacement.loopStartSample || 0,
+        loopEndSample: s.replacement.previewPcm.length,
+      };
+    }
+    return SPC.buildPreviewInfo(s);
+  }
+
   function togglePlay(i, btnEl) {
     const wasPlaying = state.currentPlayingIndex === i;
     stopPlayback();
@@ -333,25 +346,35 @@ const exportWavBtn = document.createElement("button");
     if (wasPlaying) return;
 
     const s = state.samples[i];
-    const pcmSource = s.replacement ? (s.replacement.previewPcm || s.pcm) : s.pcm;
-    const previewPcm = s.replacement
-      ? pcmSource
-      : SPC.buildPreviewPcm(s, 1.6);
+    const info = getPreviewInfo(s);
+    const previewPcm = info.pcm;
 
-    if (previewPcm.length === 0) {
+    if (!previewPcm || previewPcm.length === 0) {
       showToast("このサンプルは空です");
       return;
     }
 
     const ctx = getAudioCtx();
+    if (ctx.state === "suspended") ctx.resume();
     const buffer = ctx.createBuffer(1, previewPcm.length, SPC.NATIVE_RATE);
     const chData = buffer.getChannelData(0);
-    for (let i2 = 0; i2 < previewPcm.length; i2++) {
-      chData[i2] = previewPcm[i2] / 32768;
+    for (let k = 0; k < previewPcm.length; k++) {
+      chData[k] = previewPcm[k] / 32768;
     }
     const src = ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(ctx.destination);
+
+    // ループ点で実機同様に無限ループ再生(頭出し部分は1回だけ再生される)
+    if (info.loop) {
+      src.loop = true;
+      src.loopStart = info.loopStartSample / SPC.NATIVE_RATE;
+      src.loopEnd = info.loopEndSample / SPC.NATIVE_RATE;
+    }
+
+    const gain = ctx.createGain();
+    gain.gain.value = 0.9;
+    src.connect(gain);
+    gain.connect(ctx.destination);
     src.onended = () => {
       if (state.currentPlayingIndex === i) stopPlayback();
     };
@@ -362,6 +385,14 @@ const exportWavBtn = document.createElement("button");
     btnEl.classList.add("on");
     btnEl.innerHTML = playIcon(true);
     btnEl.closest(".sample-row").classList.add("playing");
+
+    if (info.loop) {
+      // ループ再生中はクリックで停止できる旨を通知(初回のみ)
+      if (!togglePlay._hinted) {
+        showToast("ループ再生中です。もう一度押すと停止します");
+        togglePlay._hinted = true;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -385,36 +416,43 @@ const exportWavBtn = document.createElement("button");
       const ctx = getAudioCtx();
       const audioBuffer = await SPC.decodeWavToPcm(buf, ctx);
 
-      // 元サンプルの基準レート(32000Hz)にリサンプリング
+      // 32000Hz モノラルにリサンプリング
       const targetRate = SPC.NATIVE_RATE;
       const resampledFloat = await SPC.resampleTo(audioBuffer, targetRate);
-      const pcm16Full = SPC.floatToInt16(resampledFloat);
 
-      // 元のブロック数に一致させてBRRエンコード
+      // 元サンプルの音程・ループ構造に合わせて整形(ピッチ推定→リサンプル→ループ整数周期化)
+      const { pcm: fittedPcm, info: fitInfo } = SPC.fitReplacementPcm(resampledFloat, s);
+
+      // 元のブロック数に一致させてBRRエンコード(ループ先頭ブロックを指定)
       const targetBlockCount = s.blockCount;
-      const brrBytes = SPC.encodeBrr(pcm16Full, targetBlockCount, { loop: s.hasLoop });
+      const loopStartBlock = s.hasLoop
+        ? Math.max(0, Math.round((s.loopAddr - s.startAddr) / 9))
+        : 0;
+      const brrBytes = SPC.encodeBrr(fittedPcm, targetBlockCount, {
+        loop: s.hasLoop,
+        loopStartBlock,
+      });
 
       // 検証用: 再デコードしてプレビュー波形を作る(実際にARAMに入る内容と同一)
       const verifyDecoded = SPC.decodeBrrRegion(concatForVerify(brrBytes), 0);
-      let previewPcm = verifyDecoded ? verifyDecoded.pcm : pcm16Full;
-      if (s.hasLoop && verifyDecoded) {
-        const fakeSample = {
-          pcm: verifyDecoded.pcm,
-          hasLoop: true,
-          loopAddr: s.loopAddr,
-          startAddr: s.startAddr,
-        };
-        previewPcm = SPC.buildPreviewPcm(fakeSample, 1.6);
-      }
+      const previewPcm = verifyDecoded ? verifyDecoded.pcm : fittedPcm;
 
       s.replacement = {
         fileName: f.name,
         brrBytes,
         previewPcm,
+        loopStartSample: s.hasLoop ? loopStartBlock * 16 : 0,
+        fitInfo,
       };
 
+      const pitchMsg = fitInfo.mode === "pitch-match"
+        ? ` (${fitInfo.wavFreq.toFixed(1)}Hz → ${fitInfo.origFreq.toFixed(1)}Hz にピッチ補正)`
+        : fitInfo.mode === "as-is"
+          ? " (音程を検出できなかったためそのまま配置)"
+          : " (音程を検出できなかったため長さのみ合わせ)";
+
       renderList();
-      showToast(`sample #${s.index} を "${f.name}" に置き換えました`);
+      showToast(`sample #${s.index} を "${f.name}" に置き換えました${pitchMsg}`);
     } catch (err) {
       console.error(err);
       showToast("置き換えに失敗しました: " + err.message, true);
@@ -477,10 +515,17 @@ const exportWavBtn = document.createElement("button");
     if (!s) return;
 
     // プレビュー再生時とまったく同じPCM音声を生成
-    const pcmSource = s.replacement ? (s.replacement.previewPcm || s.pcm) : s.pcm;
-    const previewPcm = s.replacement
-      ? pcmSource
-      : SPC.buildPreviewPcm(s, 1.6);
+    let previewPcm;
+    if (s.replacement && s.replacement.previewPcm) {
+      previewPcm = SPC.buildPreviewPcm({
+        pcm: s.replacement.previewPcm,
+        hasLoop: s.hasLoop,
+        loopAddr: s.loopAddr,
+        startAddr: s.startAddr,
+      }, 1.6);
+    } else {
+      previewPcm = SPC.buildPreviewPcm(s, 1.6);
+    }
 
     if (!previewPcm || previewPcm.length === 0) {
       showToast("保存できるサンプルデータがありません", true);
@@ -506,4 +551,3 @@ const exportWavBtn = document.createElement("button");
 // ---------------------------------------------------------------------
   // Export Sample as WAV
   // ---------------------------------------------------------------------
-  
