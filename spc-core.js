@@ -303,17 +303,32 @@ const SPC = (() => {
       corr[lag] = d > 0 ? s / d : 0;
     }
 
-    // 最大値を探す。ただしオクターブ下(倍周期)を選びすぎないよう、
-    // 最大値の 0.9 以上を満たす最小ラグを採用する。
-    let best = 0, bestLag = 0;
+    // 相関のピークを列挙し、最大相関の 0.85 以上のものを候補にする。
+    // 候補のうち、より短い周期がどれも長い周期の整数分の1になっている場合は
+    // 短い周期は倍音とみなし、最も長い周期(=基音)を採用する。
+    let best = 0;
+    for (let lag = minLag; lag <= maxLag; lag++) if (corr[lag] > best) best = corr[lag];
+    if (best < 0.5) return 0;
+    const peaks = [];
     for (let lag = minLag; lag <= maxLag; lag++) {
-      if (corr[lag] > best) { best = corr[lag]; bestLag = lag; }
+      if (corr[lag] >= corr[lag - 1] && corr[lag] >= corr[lag + 1] && corr[lag] >= best * 0.85) {
+        peaks.push(lag);
+      }
     }
-    if (best < 0.5 || bestLag === 0) return 0;
-    let chosen = bestLag;
-    for (let lag = minLag; lag < bestLag; lag++) {
-      const isPeak = corr[lag] >= corr[lag - 1] && corr[lag] >= corr[lag + 1];
-      if (isPeak && corr[lag] >= best * 0.9) { chosen = lag; break; }
+    if (peaks.length === 0) return 0;
+    // 最短ピークを起点に、その整数倍に当たる候補が並んでいれば基音周期は最短ピーク。
+    // 逆に最短ピークより「長い周期」で相関が同等以上に高い場合、最短は倍音の可能性。
+    // → 各候補について「その候補の 1/k 倍 (k=2..6) に当たる別ピークがあるか」を見て、
+    //    倍音の関係にある短い方を捨てる。
+    let chosen = peaks[0];
+    for (const lag of peaks) {
+      // lag が chosen の整数倍(±3%)なら、より長い方(lag)が基音候補
+      const ratio = lag / chosen;
+      const k = Math.round(ratio);
+      if (k >= 2 && k <= 6 && Math.abs(ratio - k) < 0.03 * k) {
+        // 長い周期 lag のほうが相関が大きく上回る場合のみ乗り換え(chosen が倍音だった場合)
+        if (corr[lag] > corr[chosen] * 1.02) chosen = lag;
+      }
     }
 
     // 放物線補間でサブサンプル精度に
@@ -321,6 +336,200 @@ const SPC = (() => {
     const denom = (a - 2 * b + c);
     const shift = denom !== 0 ? 0.5 * (a - c) / denom : 0;
     return chosen + Math.max(-0.5, Math.min(0.5, shift));
+  }
+
+  // ------------------------------------------------------------------
+  // 倍音に強い基音周期推定
+  //  自己相関は「基音が弱く倍音が強い音色」で周期を短く(=高く)誤る。
+  //  そこで DFT で各周波数の強さを見て、「f, 2f, 3f, 4f の強さの積(HPS)」が
+  //  最大になる f を基音とする。基音が弱くても倍音列の間隔から基音が求まる。
+  //  戻り値: 周期(サンプル数,小数)。求まらなければ 0。
+  // ------------------------------------------------------------------
+  function estimatePeriodHps(buf, start, end, minLag = 16, maxLag = 2048) {
+    start = Math.max(0, start | 0);
+    end = Math.min(buf.length, end | 0);
+    const MAXWIN = 4096;
+    if (end - start > MAXWIN) start = end - MAXWIN;
+    const N = end - start;
+    if (N < 64) return 0;
+
+    // Hann窓 + DC除去
+    let mean = 0;
+    for (let i = 0; i < N; i++) mean += buf[start + i];
+    mean /= N;
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
+      x[i] = (buf[start + i] - mean) * w;
+    }
+
+    // 探索する基音周波数(周期 minLag..maxLag に対応)を細かく走査して
+    // 直接DFT振幅を計算する(FFT不要・N が小さいので十分速い)
+    const fMin = 1 / Math.min(maxLag, N / 2);      // cycles/sample
+    const fMax = 1 / minLag;
+    const NF = 1200;                                 // 周波数の分解能(対数)
+    const H = 5;                                     // 使う倍音数
+
+    // 事前計算: 対数間隔の周波数グリッドの振幅スペクトル
+    const logMin = Math.log(fMin), logMax = Math.log(fMax * H);
+    const grid = new Float64Array(NF * 2);           // 拡張グリッド(倍音まで)
+    const gridF = new Float64Array(NF * 2);
+    const G = NF * 2;
+    for (let g = 0; g < G; g++) {
+      const f = Math.exp(logMin + (logMax - logMin) * g / (G - 1));
+      gridF[g] = f;
+      if (f >= 0.5) { grid[g] = 0; continue; }
+      let re = 0, im = 0;
+      const w = 2 * Math.PI * f;
+      for (let i = 0; i < N; i++) {
+        const a = w * i;
+        re += x[i] * Math.cos(a);
+        im -= x[i] * Math.sin(a);
+      }
+      grid[g] = Math.hypot(re, im);
+    }
+
+    // 各候補 f について HPS = Π amp(k*f)^(1/…)。log で和にして安定化
+    let bestScore = -Infinity, bestF = 0;
+    const ampAt = (f) => {
+      if (f >= 0.5 || f < fMin) return 0;
+      const gpos = (Math.log(f) - logMin) / (logMax - logMin) * (G - 1);
+      const g0 = Math.floor(gpos), t = gpos - g0;
+      const a = grid[Math.min(G - 1, Math.max(0, g0))];
+      const b = grid[Math.min(G - 1, Math.max(0, g0 + 1))];
+      return a * (1 - t) + b * t;
+    };
+    let maxAmp = 0;
+    for (let g = 0; g < G; g++) if (grid[g] > maxAmp) maxAmp = grid[g];
+    if (maxAmp <= 0) return 0;
+    const eps = maxAmp * 1e-3;
+    for (let gi = 0; gi < NF; gi++) {
+      const f = gridF[gi];
+      if (f > fMax || f < fMin) continue;
+      let score = 0, valid = true;
+      for (let k = 1; k <= H; k++) {
+        if (k * f >= 0.5) { if (k === 1) valid = false; break; }
+        score += Math.log(ampAt(k * f) + eps);
+      }
+      if (!valid) continue;
+      // 低い周波数(=長い周期)を僅かに優遇(倍音側に寄りすぎないため)
+      score += 0.02 * Math.log(1 / f);
+      if (score > bestScore) { bestScore = score; bestF = f; }
+    }
+    if (bestF <= 0) return 0;
+
+    // 自己相関で周期を精密化(HPSの結果の近傍 ±6% のみ探索)
+    const p0 = 1 / bestF;
+    const refined = estimatePeriodNear(buf, start, end, p0, 0.06);
+    return refined > 0 ? refined : p0;
+  }
+
+  // 指定周期 p0 の近傍だけで自己相関ピークを探し、サブサンプル精度で返す
+  function estimatePeriodNear(buf, start, end, p0, tol) {
+    const lo = Math.max(2, Math.floor(p0 * (1 - tol)));
+    const hi = Math.ceil(p0 * (1 + tol));
+    const len = end - start;
+    if (len < hi * 2) return 0;
+    let mean = 0;
+    for (let i = start; i < end; i++) mean += buf[i];
+    mean /= len;
+    const c = new Float64Array(hi + 2);
+    for (let lag = lo - 1; lag <= hi + 1; lag++) {
+      let s = 0, ea = 0, eb = 0;
+      const n = len - lag;
+      for (let i = 0; i < n; i++) {
+        const a = buf[start + i] - mean, b = buf[start + i + lag] - mean;
+        s += a * b; ea += a * a; eb += b * b;
+      }
+      const d = Math.sqrt(ea * eb);
+      c[lag] = d > 0 ? s / d : 0;
+    }
+    let best = -2, bl = 0;
+    for (let lag = lo; lag <= hi; lag++) if (c[lag] > best) { best = c[lag]; bl = lag; }
+    if (bl === 0) return 0;
+    const a = c[bl - 1], b = c[bl], d = c[bl + 1];
+    const den = a - 2 * b + d;
+    const sh = den !== 0 ? 0.5 * (a - d) / den : 0;
+    return bl + Math.max(-0.5, Math.min(0.5, sh));
+  }
+
+  // ------------------------------------------------------------------
+  // ループ区間の「基音周期数 k」を循環相関で判定する。
+  //  実機はループ区間をそのまま繰り返すだけなので、音程はループ長 L と、
+  //  L の中に基音が何周期(k)入っているかで決まる。 基音周波数 = 32000*k/L。
+  //  ループ区間を円環とみなし、L/k' だけ回した自分自身との相関が高い
+  //  最大の k' が、波形が実際に持っている最短周期(=基音)の周期数。
+  //  自己相関やHPSのような「周波数を推定する」方式と違い、倍音が強くても
+  //  k=1 のとき半分(1オクターブ高)と誤る問題が起きない。
+  // ------------------------------------------------------------------
+  function circCorr(pcm, ls, L, k) {
+    const per = L / k;
+    let s = 0, ea = 0, eb = 0;
+    for (let i = 0; i < L; i++) {
+      const a = pcm[ls + i];
+      let x = i + per; x -= Math.floor(x / L) * L;
+      const i0 = Math.floor(x), t = x - i0, i1 = (i0 + 1) % L;
+      const b = pcm[ls + i0] * (1 - t) + pcm[ls + i1] * t;
+      s += a * b; ea += a * a; eb += b * b;
+    }
+    const d = Math.sqrt(ea * eb);
+    return d > 0 ? s / d : 0;
+  }
+  function detectLoopCycles(pcm, ls, L, thr = 0.98) {
+    if (L < 16) return 1;
+    // 区間内の減衰・増幅(エンベロープ)を除去するため、局所RMSで正規化した
+    // コピーで相関を取る。ループ全体に緩い減衰がある素材で「どの k でも
+    // 相関が高い」と誤判定して周期数を過大に見積もるのを防ぐ。
+    const seg = new Float64Array(L);
+    for (let i = 0; i < L; i++) seg[i] = pcm[ls + i];
+    // 直流成分を除去
+    let mean = 0; for (let i = 0; i < L; i++) mean += seg[i]; mean /= L;
+    for (let i = 0; i < L; i++) seg[i] -= mean;
+    // 局所RMSで正規化(窓=ループ長の1/4、最低16)
+    const W = Math.max(16, L >> 2);
+    const env = new Float64Array(L);
+    let acc = 0;
+    // 円環上のスライディング窓
+    for (let i = 0; i < W; i++) acc += seg[i] * seg[i];
+    for (let i = 0; i < L; i++) {
+      env[i] = Math.sqrt(acc / W) + 1e-6;
+      acc += seg[(i + W) % L] * seg[(i + W) % L] - seg[i] * seg[i];
+      if (acc < 0) acc = 0;
+    }
+    // 窓の中心合わせ: 窓は先頭から W 分なので W/2 ずらす
+    const norm = new Float64Array(L);
+    for (let i = 0; i < L; i++) norm[i] = seg[i] / env[(i + (W >> 1)) % L];
+
+    // 「単に滑らかだから少し回しても似ている」ケースと、本当に周期性がある
+    // ケースを区別する。真の周期 P=L/k なら、回転量 P は相関の鋭い局所極大になり、
+    // 半周期ぶん(P/2)ずらした位置では相関が大きく下がる。
+    // よって候補 k ごとに、回転量 P での相関 c(P) が
+    //   ・閾値 thr 以上で、
+    //   ・P/2 ずらしたときの相関 c(P/2 の位置) より十分大きい(差が 0.3 以上)
+    // を満たすかを見る。
+    function corrShift(shift) {              // 回転量(サンプル)での相関
+      let s = 0, ea = 0, eb = 0;
+      for (let i = 0; i < L; i++) {
+        const a = norm[i];
+        let x = i + shift; x -= Math.floor(x / L) * L;
+        const i0 = Math.floor(x), t = x - i0, i1 = (i0 + 1) % L;
+        const b = norm[i0] * (1 - t) + norm[i1] * t;
+        s += a * b; ea += a * a; eb += b * b;
+      }
+      const d = Math.sqrt(ea * eb);
+      return d > 0 ? s / d : 0;
+    }
+    let best = 1;
+    for (let k = 2; k <= 64; k++) {
+      const P = L / k;
+      if (P < 4) break;                     // 周期が4サンプル未満は現実的でない
+      const cP = corrShift(P);
+      if (cP < thr) continue;
+      const cHalf = corrShift(P / 2);       // 半周期ずらした位置
+      if (cP - cHalf < 0.3) continue;       // 鋭いピークでなければ周期性の証拠にならない
+      best = k;
+    }
+    return best;
   }
 
   // 元サンプルの解析: ループ区間長・推定周期・周波数
@@ -331,7 +540,14 @@ const SPC = (() => {
     const loopLen = pcm.length - loopStart;
     // ループ区間があればそこ、なければ全体(後半寄り)から推定
     const from = sample.hasLoop ? loopStart : Math.floor(pcm.length * 0.25);
-    let period = estimatePeriod(pcm, from, pcm.length);
+    // 自己相関を主とする(短い窓でも周期精度が高い)。
+    // 減衰波形では窓の取り方で結果が変わるので、全体→後半→前半の順に試し、
+    // 相関が十分高く取れた最初のものを採用する。
+    let period = 0;
+    for (const [a, b] of [[0, pcm.length], [Math.floor(pcm.length * 0.25), pcm.length], [0, Math.floor(pcm.length * 0.5)]]) {
+      period = estimatePeriod(pcm, a, b);
+      if (period > 0) break;
+    }
     let cycles = 0;
     // ループありの場合、元データはループ長が周期の整数倍になるよう作られているはず。
     // 推定周期を「ループ長 / 整数」にスナップして、実際に再生される周期に一致させる
@@ -340,9 +556,62 @@ const SPC = (() => {
       cycles = Math.max(1, Math.round(loopLen / period));
       period = loopLen / cycles;
     }
+    // 基音側に倒した周期数: 推定 cycles を約数で割って、最も小さい cycles を候補にする。
+    // 推定が倍音(=短い周期)に寄る誤りに対し、より低い音(=小さい cycles)を優先する。
+    //   例: 推定 cycles=2 → 真は 1 かもしれない。
+    // 「本当は2周期分」だった場合はUIで指定し直せる。
+    let baseCycles = cycles;
+    const cycleCandidates = [];
+    if (sample.hasLoop && loopLen > 0) {
+      // ループ区間の周期数は循環相関で確定する(周波数推定に頼らない)
+      baseCycles = detectLoopCycles(pcm, loopStart, loopLen);
+
+      // 循環相関が k=1 を返した場合は2通りある:
+      //  (a) 本当にループ長=基音1周期(規約どおり)
+      //  (b) ループ長が周期の整数倍でない(規約違反/端数あり)ため周期性が検出されなかった
+      // (b) を見分けるため、自己相関で周期を測り、ループ長が周期の何倍か(kReal)を見る。
+      // kReal が整数に近ければ(a)、そうでなければ (b) として、
+      // 最も近い整数に丸めた周期数を採用する。
+      if (baseCycles === 1) {
+        const pAuto = estimatePeriod(pcm, loopStart, pcm.length);
+        if (pAuto > 0) {
+          const kReal = loopLen / pAuto;
+          const kRound = Math.max(1, Math.round(kReal));
+          // フォールバックが発動してよいのは「端数がはっきりある」場合のみ:
+          //   kReal が整数からある程度(0.12以上)離れている = ループ長が周期の整数倍でない。
+          // kReal がほぼ整数(例: 2.00)なのに循環相関が k=1 と判定したのは、
+          // 自己相関が基音の半周期(倍音)を拾っただけの可能性が高く、
+          // この場合は循環相関の k=1 を信じる(=1オクターブ高く誤る原因になる)。
+          const frac = Math.abs(kReal - kRound);
+          // さらに、その周期で「本当に自己一致するか」を検証する(信頼度チェック)。
+          // 倍音の強い音色では自己相関が中途半端な周期を返すことがあり、
+          // その場合は周期数を変えると誤って音程が変わる。
+          // 検証: 周期 pAuto ずらした波形との相関が高い(>=0.9)こと。
+          let trusted = false;
+          if (kReal >= 1.5 && frac >= 0.12) {
+            let s = 0, ea = 0, eb = 0;
+            const n = Math.floor(loopLen - pAuto);
+            for (let i = 0; i < n; i++) {
+              const a = pcm[loopStart + i];
+              const x = loopStart + i + pAuto, i0 = Math.floor(x), t = x - i0;
+              const b = pcm[i0] * (1 - t) + pcm[Math.min(pcm.length - 1, i0 + 1)] * t;
+              s += a * b; ea += a * a; eb += b * b;
+            }
+            const d = Math.sqrt(ea * eb);
+            trusted = d > 0 && (s / d) >= 0.9;
+          }
+          if (trusted) baseCycles = kRound;
+        }
+      }
+      cycles = baseCycles;
+      period = loopLen / baseCycles;
+      cycleCandidates.push(baseCycles);
+    }
     return {
       loopStart,
       loopLen,
+      baseCycles,
+      cycleCandidates,
       cycles,                                   // ループ区間に入る周期数(ループなしは0)
       period,                                   // サンプル数(32kHz基準)、0なら推定失敗
       freq: period > 0 ? NATIVE_RATE / period : 0,
@@ -439,11 +708,23 @@ const SPC = (() => {
 
       if (wavPeriod > 0 && orig.period > 0) {
         // ---- ピッチ一致モード ----
-        // WAVの周期を元サンプルの周期に合わせるための再生比
-        const pitchRatio = orig.period / wavPeriod;  // >1 なら引き伸ばし
-        // ループ区間に「WAV周期の整数倍」を敷き詰める。
-        // cycles = ループ区間に入る周期数(元サンプルの周期基準で丸める)
-        const cycles = orig.cycles > 0 ? orig.cycles : Math.max(1, Math.round(loopLen / orig.period));
+        // 置換後の音程は「ループ長 ÷ ループ区間に詰める周期数(cycles)」で決まる。
+        // (実機はループ区間をそのまま繰り返すだけなので、ループ長が周期を決める)
+        // 元サンプルの周期数は推定では確定できない(k=1のとき半分と誤認して
+        // 1オクターブ高くなる等)ため、次の優先順位で決める:
+        //   1. opts.cycles が指定されていればそれを使う(UIで選択)
+        //   2. 未指定なら元サンプルの候補のうち「もっとも基音らしい(=最小の)周期数」
+        //      → orig.baseCycles(推定の半分・1/3…も含め、最も低い音側を採用)
+        let cycles;
+        if (opts.cycles && opts.cycles >= 1) {
+          cycles = Math.round(opts.cycles);
+        } else {
+          cycles = orig.baseCycles > 0 ? orig.baseCycles : 1;
+        }
+        const basePeriod = loopLen / cycles;
+        const pitchRatio = basePeriod / wavPeriod;
+        info.cycles = cycles;
+        info.trueFreqAfter = NATIVE_RATE / basePeriod;   // 置換後に実機で鳴る基音(理論値)
         // 元WAVから取り出す区間の長さ(小数): WAV周期 × cycles
         const spanF = wavPeriod * cycles;
 
@@ -802,6 +1083,8 @@ const SPC = (() => {
     buildPreviewInfo,
     analyzeSample,
     estimatePeriod,
+    detectLoopCycles,
+    estimatePeriodHps,
     fitReplacementPcm,
     encodeBrr,
     decodeWavToPcm,
