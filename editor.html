@@ -29,7 +29,7 @@ table{border-collapse:collapse;width:100%;min-width:640px}
 th{font-weight:600;text-align:left;color:var(--dim);font-size:13px;padding:6px 8px;border-bottom:1px solid var(--line)}
 td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
 tr.empty td{opacity:.45}
-td input[type=number]{width:64px}.nn{color:var(--acc2);margin-left:8px;font-variant-numeric:tabular-nums}
+td input[type=number]{width:72px}.nn{color:var(--acc2);margin-left:8px;font-variant-numeric:tabular-nums}
 td select{max-width:220px}
 .mem{height:8px;background:#0f1315;border-radius:4px;overflow:hidden;margin-top:6px}
 #memBar{height:100%;width:0;background:var(--acc)}#memBar.over{background:var(--err)}
@@ -39,6 +39,7 @@ td select{max-width:220px}
 .status{margin-top:12px;min-height:1.6em}.status.ok{color:var(--acc)}.status.err{color:var(--err)}
 .spec{color:var(--dim);font-size:13px}.spec li{margin:2px 0}
 </style>
+<script src="libspc.js"></script>
 </head>
 <body>
 <main>
@@ -52,18 +53,18 @@ td select{max-width:220px}
 </section>
 
 <section>
-<h2><span class="step">2</span>サンプル<small>WAV / MP3 / OGG</small></h2>
-<div class="drop"><input type="file" id="sampleFile" accept="audio/*" multiple></div>
+<h2><span class="step">2</span>サンプル<small>.BRR / WAV / MP3 / OGG</small></h2>
+<div class="drop"><input type="file" id="sampleFile" accept=".brr,audio/*" multiple></div>
 <div id="sampleList"></div>
-<p class="hint">読み込み時に32kHzのモノラルへ変換し、BRR形式に圧縮します。短いサンプルほどメモリに余裕ができます。</p>
+<p class="hint">BRRファイルは直接読み込まれます。BRRファイルにループアドレス情報が含まれている場合、自動的にループポイントに適用されます。</p>
 </section>
 
 <section>
 <h2><span class="step">3</span>チャンネルへの割り当て</h2>
 <div class="tablewrap"><table>
-<thead><tr><th>CH</th><th>ノート数</th><th>音域</th><th>サンプル</th><th>基準ノート</th><th>ループ</th></tr></thead>
+<thead><tr><th>CH</th><th>ノート数</th><th>音域</th><th>サンプル</th><th>基準ノート</th><th>ピッチ微調整(cent)</th><th>ループ</th></tr></thead>
 <tbody id="mapBody"></tbody></table></div>
-<p class="hint">基準ノートは、サンプルを元の高さで鳴らすMIDIノート番号です(60 = C4)。ループをオンにすると、ノートが続く間サンプルを繰り返します。</p>
+<p class="hint">基準ノートは元の高さで鳴るMIDIノート(60=C4)です。ピッチ微調整で手動のピッチチューニング(100cent=半音)を行えます。</p>
 <div class="mem"><div id="memBar"></div></div><div class="hint" id="memText"></div>
 </section>
 
@@ -87,13 +88,13 @@ td select{max-width:220px}
 <ul class="spec">
 <li>1チャンネルにつき1サンプル、同時発音は1音(重なる和音は高速アルペジオで処理されます)</li>
 <li>DSPのエコー機能(ディレイ/リバーブ)により、全体に自然な響きを追加しています</li>
-<li>タイミング精度より短いノート(オンとオフが同じ時刻に丸められるもの)は発音されません。アルペジオの速度調整や短い音が多い曲は精度を変更してください</li>
-<li>使うMIDI情報はノートのオン/オフ・テンポ・ベロシティ・CC7(音量)・CC11(エクスプレッション)・CC10(パン)。音量とパンはノートを鳴らす瞬間の値で固定されます。ピッチベンド等は無視</li>
-<li>エンベロープは固定値。BRRはフィルタなしの簡易エンコード</li>
-<li>「MIDIを試聴」はブラウザ上の近似再生で、実際のSNES音源とは音色が少し異なります</li>
+<li>BRRファイルの読み込みに対応。ループ属性付きBRRの場合は自動的にBRR内のループアドレスへジャンプします</li>
+<li>ピッチ調整機能により、基準ノート指定に加えて手動での細かいピッチチューニングが可能です</li>
+<li>「MIDIを試聴」は内蔵SPCエミュレータによる再生です</li>
 </ul>
 </section>
 </main>
+
 <script>
 class Assembler {
   constructor(origin) {
@@ -236,7 +237,7 @@ class Assembler {
   }
 }
 
-const DSP = {
+const DSPregs = {
   VOL_L: 0x00, VOL_R: 0x01, PITCH_L: 0x02, PITCH_H: 0x03, SRCN: 0x04,
   ADSR1: 0x05, ADSR2: 0x06, GAIN: 0x07, ENVX: 0x08, OUTX: 0x09,
   MVOL_L: 0x0C, MVOL_R: 0x1C, EVOL_L: 0x2C, EVOL_R: 0x3C,
@@ -278,11 +279,12 @@ const ZG = {
   volR: 0x09,
 };
 
-// 発音待ちのピッチ/音量を保持するゼロページ領域: 0x40 + voice*4 (pitchLo, pitchHi, volL, volR)
 const pendBase = v => 0x40 + v * 4;
 
-function pitchForNote(note, baseNote) {
-  const ratio = Math.pow(2, (note - baseNote) / 12);
+// ピッチ計算 (手動ファインチューン対応)
+function pitchForNote(note, baseNote, fineTune = 0) {
+  const semitones = (note - baseNote) + (fineTune / 100);
+  const ratio = Math.pow(2, semitones / 12);
   let p = Math.round(0x1000 * ratio);
   if (p < 1) p = 1;
   if (p > 0x3FFF) p = 0x3FFF;
@@ -316,28 +318,28 @@ function buildDriver(Assembler, opts) {
     a.movA_imm(val);
     a.movDp_A(IO.DSPDATA);
   };
-  setDsp(DSP.FLG, 0x00);        // 0x00: ECEN=0 (Echo enable), ノイズ無効
-  setDsp(DSP.KON, 0x00);
-  setDsp(DSP.KOFF, 0x00);
-  setDsp(DSP.MVOL_L, 0x7F);
-  setDsp(DSP.MVOL_R, 0x7F);
-  setDsp(DSP.EVOL_L, 0x28);      // エコー音量 L (~30%)
-  setDsp(DSP.EVOL_R, 0x28);      // エコー音量 R (~30%)
-  setDsp(DSP.EFB, 0x30);         // エコーフィードバック (~37%)
-  setDsp(DSP.EON, 0xFF);         // 全8ボイスでエコー有効
-  setDsp(DSP.EDL, 0x03);         // エコーディレイタイム (約48ms)
-  setDsp(DSP.ESA, 0xE0);         // エコーバッファ開始アドレス (0xE000)
-  setDsp(DSP.NON, 0x00);
-  setDsp(DSP.PMON, 0x00);
-  setDsp(DSP.DIR, dirPage & 0xFF);
+  setDsp(DSPregs.FLG, 0x00);
+  setDsp(DSPregs.KON, 0x00);
+  setDsp(DSPregs.KOFF, 0x00);
+  setDsp(DSPregs.MVOL_L, 0x7F);
+  setDsp(DSPregs.MVOL_R, 0x7F);
+  setDsp(DSPregs.EVOL_L, 0x28);
+  setDsp(DSPregs.EVOL_R, 0x28);
+  setDsp(DSPregs.EFB, 0x30);
+  setDsp(DSPregs.EON, 0xFF);
+  setDsp(DSPregs.EDL, 0x03);
+  setDsp(DSPregs.ESA, 0xE0);
+  setDsp(DSPregs.NON, 0x00);
+  setDsp(DSPregs.PMON, 0x00);
+  setDsp(DSPregs.DIR, dirPage & 0xFF);
 
   for (let v = 0; v < NUM_VOICES; v++) {
     const b = v << 4;
-    setDsp(b | DSP.VOL_L, 0x7F);
-    setDsp(b | DSP.VOL_R, 0x7F);
-    setDsp(b | DSP.ADSR1, 0xFF);  // ADSR有効, AR=15, DR=7
-    setDsp(b | DSP.ADSR2, 0xE0);  // SL=7, SR=0
-    setDsp(b | DSP.SRCN, srcn[v] & 0xFF);
+    setDsp(b | DSPregs.VOL_L, 0x7F);
+    setDsp(b | DSPregs.VOL_R, 0x7F);
+    setDsp(b | DSPregs.ADSR1, 0x00); // Bit7=0 でADSR無効化
+setDsp(b | DSPregs.GAIN,  0x7F); // Direct GAIN: 最大音量(127)を維持
+    setDsp(b | DSPregs.SRCN, srcn[v] & 0xFF);
   }
 
   for (let v = 0; v < NUM_VOICES; v++) {
@@ -360,7 +362,7 @@ function buildDriver(Assembler, opts) {
   a.movDp_A(IO.CONTROL);
 
   a.label('main_loop');
-  a.movA_dp(IO.T0OUT);          // 読むとクリアされる(4bitカウンタ)
+  a.movA_dp(IO.T0OUT);
   a.beq('main_loop');
   a.movDp_A(ZG.tickPending);
 
@@ -376,9 +378,6 @@ function buildDriver(Assembler, opts) {
   a.bne('tick_loop');
   a.bra('main_loop');
 
-  // 発音待ちボイスごとに「ピッチ・音量 → 即KON」を行う。
-  // ピッチ設定からKONまでの間隔が短いので、前の音が新しいピッチで鳴る(異様に高い音になる)ことがない。
-  // KONは2サンプル(64サイクル)以上あけて書く必要があるが、1ボイスの処理が約70サイクルあるので満たされる。
   a.label('flush_dsp');
   for (let v = 0; v < NUM_VOICES; v++) {
     const base = pendBase(v);
@@ -387,14 +386,14 @@ function buildDriver(Assembler, opts) {
     a.movA_dp(ZG.konMask);
     a.andA_imm(1 << v);
     a.beq(skip);
-    const regs = [[DSP.PITCH_L, 0], [DSP.PITCH_H, 1], [DSP.VOL_L, 2], [DSP.VOL_R, 3]];
+    const regs = [[DSPregs.PITCH_L, 0], [DSPregs.PITCH_H, 1], [DSPregs.VOL_L, 2], [DSPregs.VOL_R, 3]];
     for (const [reg, off] of regs) {
       a.movA_imm(rb | reg);
       a.movDp_A(IO.DSPADDR);
       a.movA_dp(base + off);
       a.movDp_A(IO.DSPDATA);
     }
-    a.movA_imm(DSP.KON);
+    a.movA_imm(DSPregs.KON);
     a.movDp_A(IO.DSPADDR);
     a.movA_imm(1 << v);
     a.movDp_A(IO.DSPDATA);
@@ -411,20 +410,19 @@ function buildDriver(Assembler, opts) {
     a.label(L('tick'));
     a.movA_dp(z.delay);
     a.beq(L('fire'));
-    a.cmpA_imm(0xFF);           // 曲末(停止)
+    a.cmpA_imm(0xFF);
     a.beq(L('idle'));
     a.decDp(z.delay);
     a.label(L('idle'));
     a.ret();
 
     a.label(L('fire'));
-    a.movY_imm(0x01); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.scratch);   // note
-    a.movY_imm(0x02); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.scratch2);  // koff
-    a.movY_imm(0x03); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.scratch3);  // kon
-    a.movY_imm(0x04); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.volL);      // volL
-    a.movY_imm(0x05); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.volR);      // volR
+    a.movY_imm(0x01); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.scratch);
+    a.movY_imm(0x02); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.scratch2);
+    a.movY_imm(0x03); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.scratch3);
+    a.movY_imm(0x04); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.volL);
+    a.movY_imm(0x05); a._push([0xF7, z.ptrLo]); a.movDp_A(ZG.volR);
 
-    // 曲末チェック: koff == 0xFF
     a.movA_dp(ZG.scratch2);
     a.cmpA_imm(0xFF);
     a.bne(L('notend'));
@@ -433,36 +431,34 @@ function buildDriver(Assembler, opts) {
     a.ret();
     a.label(L('notend'));
 
-    // koff処理
     a.movA_dp(ZG.scratch2);
     a.beq(L('nokoff'));
-    a.movA_imm(DSP.KOFF);
+    a.movA_imm(DSPregs.KOFF);
     a.movDp_A(IO.DSPADDR);
     a.movA_imm(1 << v);
     a.movDp_A(IO.DSPDATA);
-    a.movY_imm(0x20);               // DSPが2サンプル以上KOFFを見るまで待つ
+    a.movY_imm(0x20);
     a.label(L('kwait'));
     a.decY();
     a.bne(L('kwait'));
     a.movA_imm(0x00);
-    a.movDp_A(IO.DSPDATA);          // DSPADDRはKOFFのまま → KOFF=0
-    a.movY_imm(0x18);               // KOFF解除がDSPに反映されるまで待つ(直後のKONがKOFFに潰されて無音になるのを防ぐ)
+    a.movDp_A(IO.DSPDATA);
+    a.movY_imm(0x18);
     a.label(L('kwait2'));
     a.decY();
     a.bne(L('kwait2'));
     a.label(L('nokoff'));
 
-    // kon処理: kon=1 → ピッチ/音量を保留にして発音予約 / kon=2 → 音量のみ即時更新
     const pb = pendBase(v);
     a.movA_dp(ZG.scratch3);
     a.beq(L('nokon'));
     a.cmpA_imm(2);
     a.bne(L('dokon'));
-    a.movA_imm(voiceRegBase | DSP.VOL_L);
+    a.movA_imm(voiceRegBase | DSPregs.VOL_L);
     a.movDp_A(IO.DSPADDR);
     a.movA_dp(ZG.volL);
     a.movDp_A(IO.DSPDATA);
-    a.movA_imm(voiceRegBase | DSP.VOL_R);
+    a.movA_imm(voiceRegBase | DSPregs.VOL_R);
     a.movDp_A(IO.DSPADDR);
     a.movA_dp(ZG.volR);
     a.movDp_A(IO.DSPDATA);
@@ -482,7 +478,6 @@ function buildDriver(Assembler, opts) {
     a.movDp_A(ZG.konMask);
     a.label(L('nokon'));
 
-    // ptr += 6
     a.clrc();
     a.movA_dp(z.ptrLo);
     a.adcA_imm(6);
@@ -491,10 +486,9 @@ function buildDriver(Assembler, opts) {
     a.incDp(z.ptrHi);
     a.label(L('nocarry'));
 
-    // 次イベントのdelayを読む
     a.movY_imm(0x00);
     a._push([0xF7, z.ptrLo]);
-    a.movDp_A(z.delay);             // delay=d → 次のイベントは d+1 tick 後(プレビューと同じ解釈。0でも同tickでは発火しない)
+    a.movDp_A(z.delay);
     a.ret();
   }
 
@@ -502,18 +496,14 @@ function buildDriver(Assembler, opts) {
 }
 
 function encodeBRR(samples, loop) {
-  // BRRの復号値は15bit(DSPが出力時に2倍する)。16bit PCMをそのまま入れると
-  // 音量が2倍になり、シフト12の上限(±14336)で頭打ちして歪む(ポップ/高音ノイズ)ため、
-  // 半分にして符号化する。
   let len = samples.length;
-  // ループ時は端数ブロックを切り捨て(0埋めするとループのたびに無音の隙間ができてポップする)
   if (loop && len >= 32) len = len - (len % 16);
   const nBlocks = Math.max(1, Math.ceil(len / 16));
   const padded = new Int16Array(nBlocks * 16);
 
   let peak = 0;
   for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(samples[i] / 2));
-  const gain = peak > 14336 ? 14336 / peak : 1;   // 符号化可能な最大値(7<<11)に収める
+  const gain = peak > 14336 ? 14336 / peak : 1;
   for (let i = 0; i < len; i++) padded[i] = Math.round(samples[i] / 2 * gain);
 
   const out = [];
@@ -523,8 +513,8 @@ function encodeBRR(samples, loop) {
     const { shift, nibbles } = bestShiftForBlock(block);
 
     let header = (shift & 0x0F) << 4;
-    if (isLast) header |= 0x01;      // END
-    if (loop) header |= 0x02;        // LOOP
+    if (isLast) header |= 0x01;
+    if (loop) header |= 0x02;
     out.push(header);
     for (let i = 0; i < 16; i += 2) {
       const hi = nibbles[i] & 0x0F;
@@ -532,7 +522,7 @@ function encodeBRR(samples, loop) {
       out.push((hi << 4) | lo);
     }
   }
-  return { bytes: new Uint8Array(out), blockCount: nBlocks };
+  return { bytes: new Uint8Array(out), blockCount: nBlocks, loopOffset: 0 };
 }
 
 function bestShiftForBlock(block) {
@@ -555,6 +545,72 @@ function bestShiftForBlock(block) {
     }
   }
   return { shift: 12, nibbles: new Int8Array(16) };
+}
+
+// BRR → PCM デコーダー (BRRファイルの試聴用)
+function decodeBRRtoPCM(brrBytes) {
+  const numBlocks = Math.floor(brrBytes.length / 9);
+  const pcm = new Int16Array(numBlocks * 16);
+  let p1 = 0, p2 = 0;
+  let idx = 0;
+
+  for (let b = 0; b < numBlocks; b++) {
+    const header = brrBytes[b * 9];
+    const shift = (header >> 4) & 0x0F;
+    const filter = (header >> 2) & 0x03;
+
+    for (let i = 0; i < 8; i++) {
+      const byte = brrBytes[b * 9 + 1 + i];
+      const nibbles = [(byte >> 4) & 0x0F, byte & 0x0F];
+
+      for (let n = 0; n < 2; n++) {
+        let nib = nibbles[n];
+        if (nib >= 8) nib -= 16;
+
+        let s = 0;
+        if (shift <= 12) {
+          s = nib << shift;
+          if (shift > 0) s >>= 1;
+        } else {
+          s = (nib < 0) ? -2048 : 0;
+        }
+
+        let out = s;
+        if (filter === 1) out += p1 * 15 / 16;
+        else if (filter === 2) out += p1 * 61 / 32 - p2 * 15 / 16;
+        else if (filter === 3) out += p1 * 115 / 64 - p2 * 13 / 16;
+
+        out = Math.max(-32768, Math.min(32767, Math.round(out)));
+        p2 = p1;
+        p1 = out;
+        pcm[idx++] = out;
+      }
+    }
+  }
+  return pcm;
+}
+
+// BRRファイル パース処理
+async function parseBRRFile(file) {
+  const ab = await file.arrayBuffer();
+  const u8 = new Uint8Array(ab);
+  let loopOffset = 0;
+  let brrBytes = u8;
+
+  if (u8.length % 9 === 2) {
+    loopOffset = u8[0] | (u8[1] << 8);
+    brrBytes = u8.subarray(2);
+  } else if (u8.length % 9 !== 0) {
+    throw new Error('有効なBRRファイルではありません (サイズエラー)');
+  }
+
+  let hasLoop = false;
+  for (let b = 0; b < brrBytes.length; b += 9) {
+    if (brrBytes[b] & 0x02) { hasLoop = true; break; }
+  }
+
+  const pcm = decodeBRRtoPCM(brrBytes);
+  return { name: file.name, brrBytes, pcm, loopOffset, hasLoop };
 }
 
 function parseMidi(arrayBuffer) {
@@ -699,15 +755,14 @@ function calcVolLR(vel, cc7, cc11, cc10) {
   return [c(Math.cos(ang)), c(Math.sin(ang))];
 }
 
-const ARP_MS = 16;       // アルペジオの切替間隔(ms)。ドライバのtick(2〜16ms)とは独立
-const MIN_NOTE_MS = 24;  // 最短発音時間(ms)。これより短いノートは延ばす(KON直後にKOFFされて無音になるのを防ぐ)
+const ARP_MS = 16;
+const MIN_NOTE_MS = 24;
 
 function buildEventStreamForChannel(events, tickMs) {
   let cc7 = 100, cc11 = 127, cc10 = 64;
   const toTick = sec => Math.round((sec * 1000) / tickMs);
   const minTicks = Math.max(2, Math.ceil(MIN_NOTE_MS / tickMs));
 
-  // noteOn/noteOff をノート単位に対応付ける(同音は先に鳴った方から閉じる)
   const notes = [];
   const open = {};
   const ccByTick = {};
@@ -729,14 +784,14 @@ function buildEventStreamForChannel(events, tickMs) {
   const onsByTick = {}, offsByTick = {};
   for (const n of notes) {
     if (n.off === Infinity) n.off = maxTick + 1;
-    n.off = Math.max(n.off, n.on + minTicks);   // 最短発音時間を確保
+    n.off = Math.max(n.off, n.on + minTicks);
     if (n.off > maxTick) maxTick = n.off;
     (onsByTick[n.on] = onsByTick[n.on] || []).push(n);
     (offsByTick[n.off] = offsByTick[n.off] || []).push(n);
   }
 
   const items = [];
-  const active = [];          // 発音中のノート(重複あり得る)
+  const active = [];
   let arpIdx = 0;
   const arpTicks = Math.max(1, Math.round(ARP_MS / tickMs));
   let arpTimer = 0;
@@ -755,7 +810,6 @@ function buildEventStreamForChannel(events, tickMs) {
         ccChanged = true;
       }
     }
-    // 同じtickでは noteOff を先に、noteOn を後に処理する(順序依存でノートが消えないように)
     if (offsByTick[t]) for (const n of offsByTick[t]) {
       const i = active.indexOf(n);
       if (i >= 0) { active.splice(i, 1); notesChanged = true; }
@@ -764,7 +818,6 @@ function buildEventStreamForChannel(events, tickMs) {
       active.push(n); notesChanged = true; newAttack = true;
     }
 
-    // 同じ音高の重複を除いた発音リスト(後から鳴ったものの強さを採用)
     const byPitch = new Map();
     for (const n of active) byPitch.set(n.note, n);
     const activeNotes = [...byPitch.values()].sort((x, y) => x.note - y.note);
@@ -887,7 +940,7 @@ function buildSpcFromProject({ midiArrayBuffer, samples, mapping, tickMs, title,
   const DRIVER_ORIGIN = 0x0300;
   const PITCH_BASE = 0x0E00;
   const SAMPLE_BASE = 0x1E00;
-  const LIMIT = 0xE000; // 0xE000 以降は DSP エコーバッファ領域
+  const LIMIT = 0xE000;
 
   const usedIdx = [];
   for (let v = 0; v < NUM_VOICES; v++) {
@@ -900,19 +953,35 @@ function buildSpcFromProject({ midiArrayBuffer, samples, mapping, tickMs, title,
   let cursor = SAMPLE_BASE;
   const dirIndexOf = {};
   const sampleInfo = [];
+
   usedIdx.forEach((si, dirIdx) => {
-    const loop = mapping.some(m => m && m.sampleIndex === si && m.loop);
-    const { bytes } = encodeBRR(samples[si].pcm, loop);
+    const sample = samples[si];
+    let bytes, loopOffset = 0;
+
+    if (sample.brrBytes) {
+      bytes = sample.brrBytes;
+      loopOffset = sample.loopOffset || 0;
+    } else {
+      const loop = mapping.some(m => m && m.sampleIndex === si && m.loop);
+      const encoded = encodeBRR(sample.pcm, loop);
+      bytes = encoded.bytes;
+      loopOffset = encoded.loopOffset || 0;
+    }
+
     if (cursor + bytes.length > LIMIT) throw new Error('サンプルの合計サイズがSPC RAMに収まりません。サンプルを短くしてください');
     ram.set(bytes, cursor);
+
     const start = cursor;
-    const loopStart = start;
+    const isLoopEnabled = mapping.some(m => m && m.sampleIndex === si && m.loop);
+    const loopStart = isLoopEnabled ? (start + loopOffset) : start;
+
     ram[DIR_ADDR + dirIdx * 4 + 0] = start & 0xFF;
     ram[DIR_ADDR + dirIdx * 4 + 1] = start >> 8;
     ram[DIR_ADDR + dirIdx * 4 + 2] = loopStart & 0xFF;
     ram[DIR_ADDR + dirIdx * 4 + 3] = loopStart >> 8;
+
     dirIndexOf[si] = dirIdx;
-    sampleInfo.push({ name: samples[si].name, bytes: bytes.length, addr: start });
+    sampleInfo.push({ name: sample.name, bytes: bytes.length, addr: start });
     cursor += bytes.length;
   });
 
@@ -920,17 +989,20 @@ function buildSpcFromProject({ midiArrayBuffer, samples, mapping, tickMs, title,
   for (let v = 0; v < NUM_VOICES; v++) {
     const m = mapping[v];
     const root = m && m.sampleIndex >= 0 ? m.rootNote : 60;
+    const fineTune = m && m.sampleIndex >= 0 ? (m.fineTune || 0) : 0;
     baseNotes.push(root);
     srcn.push(m && m.sampleIndex >= 0 ? dirIndexOf[m.sampleIndex] : 0);
     const lo = PITCH_BASE + v * 0x200, hi = lo + 0x100;
     pitchTableAddrs.push({ lo, hi });
+
     for (let n = 0; n < 128; n++) {
-      const p = pitchForNote(n, root);
+      const p = pitchForNote(n, root, fineTune);
       ram[lo + n] = p & 0xFF; ram[hi + n] = p >> 8;
     }
     const evs = (m && m.sampleIndex >= 0) ? byChannel[v] : [];
     streamBytes.push(buildEventStreamForChannel(evs, tickMs));
   }
+
   for (let v = 0; v < NUM_VOICES; v++) {
     const st = streamBytes[v];
     if (cursor + st.length > LIMIT) throw new Error('曲データ+サンプルがSPC RAMに収まりません。サンプルを短くするかノート数を減らしてください');
@@ -949,11 +1021,11 @@ function buildSpcFromProject({ midiArrayBuffer, samples, mapping, tickMs, title,
 
   const dsp = new Uint8Array(128);
   dsp[0x6C] = 0x00; dsp[0x5D] = DIR_ADDR >> 8;
-  dsp[0x2C] = 0x28; dsp[0x3C] = 0x28; // EVOL L/R
-  dsp[0x0D] = 0x30;                   // EFB
-  dsp[0x4D] = 0xFF;                   // EON
-  dsp[0x7D] = 0x03;                   // EDL
-  dsp[0x6D] = 0xE0;                   // ESA (0xE000)
+  dsp[0x2C] = 0x28; dsp[0x3C] = 0x28;
+  dsp[0x0D] = 0x30;
+  dsp[0x4D] = 0xFF;
+  dsp[0x7D] = 0x03;
+  dsp[0x6D] = 0xE0;
 
   const lastSec = timed.length ? timed[timed.length - 1].timeSec : 0;
   const spc = buildSpcFile({ ram, dsp, pc: labels['start'], title, artist, game, seconds: lastSec + 2, fadeMs: 0 });
@@ -963,7 +1035,7 @@ function buildSpcFromProject({ midiArrayBuffer, samples, mapping, tickMs, title,
 const $ = s => document.querySelector(s);
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const noteName = n => NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
-const state = { midi: null, midiBuf: null, midiName: '', channels: [], samples: [], mapping: Array.from({length: 8}, () => ({ sampleIndex: -1, rootNote: 60, loop: false })), lastSpc: null };
+const state = { midi: null, midiBuf: null, midiName: '', channels: [], samples: [], mapping: Array.from({length: 8}, () => ({ sampleIndex: -1, rootNote: 60, fineTune: 0, loop: false })), lastSpc: null };
 
 function log(msg, kind) {
   const el = $('#status');
@@ -1011,11 +1083,23 @@ async function loadMidi(file) {
 async function addSamples(files) {
   for (const f of files) {
     try {
-      const pcm = await decodeToPcm32k(f);
-      state.samples.push({ name: f.name, pcm });
+      if (f.name.toLowerCase().endsWith('.brr')) {
+        const brr = await parseBRRFile(f);
+        state.samples.push(brr);
+      } else {
+        const pcm = await decodeToPcm32k(f);
+        state.samples.push({ name: f.name, pcm });
+      }
     } catch (e) { log(`${f.name} を読み込めませんでした: ${e.message || e}`, 'err'); }
   }
-  if (state.samples.length) state.mapping.forEach((m, i) => { if (m.sampleIndex < 0 && state.channels[i] && state.channels[i].notes) m.sampleIndex = 0; });
+  if (state.samples.length) {
+    state.mapping.forEach((m, i) => {
+      if (m.sampleIndex < 0 && state.channels[i] && state.channels[i].notes) {
+        m.sampleIndex = 0;
+        if (state.samples[0].hasLoop) m.loop = true;
+      }
+    });
+  }
   renderSamples(); renderMapping();
 }
 
@@ -1023,8 +1107,16 @@ function renderSamples() {
   const box = $('#sampleList'); box.innerHTML = '';
   state.samples.forEach((s, i) => {
     const row = document.createElement('div'); row.className = 'srow';
-    const kb = Math.ceil(s.pcm.length / 16) * 9 / 1024;
-    row.innerHTML = `<span class="sname"></span><span class="smeta">${(s.pcm.length / 32000).toFixed(2)}秒 · BRR ${kb.toFixed(1)}KB</span>`;
+    let infoText = '';
+    if (s.brrBytes) {
+      const kb = s.brrBytes.length / 1024;
+      const loopBlock = Math.floor(s.loopOffset / 9);
+      infoText = `BRR ${kb.toFixed(1)}KB · ${s.hasLoop ? `ループ位置: ブロック${loopBlock}` : 'ループなし'}`;
+    } else {
+      const kb = Math.ceil(s.pcm.length / 16) * 9 / 1024;
+      infoText = `${(s.pcm.length / 32000).toFixed(2)}秒 · BRR ${kb.toFixed(1)}KB`;
+    }
+    row.innerHTML = `<span class="sname"></span><span class="smeta">${infoText}</span>`;
     row.querySelector('.sname').textContent = s.name;
     const play = document.createElement('button'); play.textContent = '試聴'; play.onclick = () => previewSample(i);
     const del = document.createElement('button'); del.textContent = '削除'; del.onclick = () => {
@@ -1043,16 +1135,33 @@ function renderMapping() {
     const m = state.mapping[ch], info = state.channels[ch] || { notes: 0 };
     const tr = document.createElement('tr'); if (!info.notes) tr.className = 'empty';
     const range = info.notes ? `${noteName(info.min)}–${noteName(info.max)}` : '—';
-    tr.innerHTML = `<td>${ch + 1}</td><td>${info.notes || 0}</td><td>${range}</td><td></td><td></td><td></td>`;
+    tr.innerHTML = `<td>${ch + 1}</td><td>${info.notes || 0}</td><td>${range}</td><td></td><td></td><td></td><td></td>`;
+    
     const sel = document.createElement('select');
     sel.innerHTML = '<option value="-1">(無音)</option>' + state.samples.map((s, i) => `<option value="${i}">${s.name.replace(/</g, '&lt;')}</option>`).join('');
-    sel.value = m.sampleIndex; sel.onchange = () => { m.sampleIndex = +sel.value; updateMem(); };
+    sel.value = m.sampleIndex;
+    sel.onchange = () => {
+      m.sampleIndex = +sel.value;
+      if (m.sampleIndex >= 0 && state.samples[m.sampleIndex] && state.samples[m.sampleIndex].hasLoop) {
+        m.loop = true;
+      }
+      renderMapping();
+    };
+
     const root = document.createElement('input'); root.type = 'number'; root.min = 0; root.max = 127; root.value = m.rootNote;
     root.oninput = () => { m.rootNote = Math.max(0, Math.min(127, +root.value || 0)); lbl.textContent = noteName(m.rootNote); };
     const lbl = document.createElement('span'); lbl.className = 'nn'; lbl.textContent = noteName(m.rootNote);
+
+    const tune = document.createElement('input'); tune.type = 'number'; tune.min = -1200; tune.max = 1200; tune.step = 1; tune.value = m.fineTune || 0;
+    tune.oninput = () => { m.fineTune = +tune.value || 0; };
+
     const loop = document.createElement('input'); loop.type = 'checkbox'; loop.checked = m.loop; loop.onchange = () => { m.loop = loop.checked; };
+
     const tds = tr.querySelectorAll('td');
-    tds[3].append(sel); tds[4].append(root, lbl); tds[5].append(loop);
+    tds[3].append(sel);
+    tds[4].append(root, lbl);
+    tds[5].append(tune);
+    tds[6].append(loop);
     box.append(tr);
   }
   updateMem();
@@ -1060,7 +1169,13 @@ function renderMapping() {
 
 function updateMem() {
   const used = new Set(state.mapping.filter(m => m.sampleIndex >= 0).map(m => m.sampleIndex));
-  let bytes = 0; used.forEach(i => { if (state.samples[i]) bytes += Math.ceil(state.samples[i].pcm.length / 16) * 9; });
+  let bytes = 0;
+  used.forEach(i => {
+    if (state.samples[i]) {
+      if (state.samples[i].brrBytes) bytes += state.samples[i].brrBytes.length;
+      else bytes += Math.ceil(state.samples[i].pcm.length / 16) * 9;
+    }
+  });
   const cap = 0xE000 - 0x1E00 - 3000;
   const pct = Math.min(100, bytes / cap * 100);
   $('#memBar').style.width = pct + '\%'; $('#memBar').className = pct > 95 ? 'over' : '';
@@ -1072,88 +1187,53 @@ function ac() { return actx || (actx = new (window.AudioContext || window.webkit
 function pcmBuffer(pcm) { const b = ac().createBuffer(1, pcm.length, 32000); const d = b.getChannelData(0); for (let i = 0; i < pcm.length; i++) d[i] = pcm[i] / 32768; return b; }
 function previewSample(i) { const s = ac().createBufferSource(); s.buffer = pcmBuffer(state.samples[i].pcm); s.connect(ac().destination); s.start(); }
 
-let playing = [];
-function stopPreview() { playing.forEach(n => { try { n.stop(); } catch (e) {} }); playing = []; }
+let spcPlayer = null;
+
+function getSpcPlayer() {
+  if (!spcPlayer && typeof SPCPlayer !== 'undefined') {
+    spcPlayer = SPCPlayer.getInstance();
+  }
+  return spcPlayer;
+}
+
+function stopPreview() {
+  const player = getSpcPlayer();
+  if (player) {
+    if (typeof player.stop === 'function') {
+      player.stop();
+    } else if (typeof player.pause === 'function') {
+      player.pause();
+    }
+  }
+}
+
 function previewSong() {
   stopPreview();
   if (!state.midiBuf) return log('先にMIDIを読み込んでください', 'err');
-  const timed = midiToTimedEvents(parseMidi(state.midiBuf));
-  const byChannel = groupEventsByChannel(timed, 8);
-  const t0 = ac().currentTime + 0.1;
-  const tickMs = +$('#tick').value;
 
-  // 試聴用の簡易DSPエコー（ディレイ + フィードバック）
-  const echoDelay = ac().createDelay();
-  echoDelay.delayTime.value = 0.048; // EDL 0x03 (~48ms)
-  const echoFb = ac().createGain();
-  echoFb.gain.value = 0.35;          // EFB
-  const echoGain = ac().createGain();
-  echoGain.gain.value = 0.3;          // EVOL
+  try {
+    const r = buildSpcFromProject({
+      midiArrayBuffer: state.midiBuf,
+      samples: state.samples,
+      mapping: state.mapping,
+      tickMs: +$('#tick').value,
+      title: $('#title').value || 'Preview',
+      artist: $('#artist').value || '',
+      game: $('#game').value || '',
+    });
 
-  echoDelay.connect(echoFb);
-  echoFb.connect(echoDelay);
-  echoDelay.connect(echoGain);
-  echoGain.connect(ac().destination);
-
-  for (let ch = 0; ch < 8; ch++) {
-    const m = state.mapping[ch];
-    if (m.sampleIndex < 0 || !state.samples[m.sampleIndex]) continue;
-    const stream = buildEventStreamForChannel(byChannel[ch], tickMs);
-    let curTime = t0;
-    let activeSource = null;
-    let activeGains = null;
-
-    for (let pos = 0; pos < stream.length; pos += 6) {
-      const delay = stream[pos];
-      const note = stream[pos + 1];
-      const koff = stream[pos + 2];
-      const kon = stream[pos + 3];
-      const vl = stream[pos + 4];
-      const vr = stream[pos + 5];
-
-      if (koff === 0xFF) break;
-
-      curTime += (delay + 1) * (tickMs / 1000);
-
-      if (koff && activeSource) {
-        try { activeSource.stop(curTime); } catch (e) {}
-        activeSource = null;
-      }
-
-      if (kon === 2) {
-        // 音量のみ更新
-        if (activeGains) {
-          activeGains[0].gain.setValueAtTime(0.35 * vl / 127, curTime);
-          activeGains[1].gain.setValueAtTime(0.35 * vr / 127, curTime);
-        }
-        continue;
-      }
-
-      if (kon) {
-        if (activeSource) {
-          try { activeSource.stop(curTime); } catch (e) {}
-        }
-        const s = ac().createBufferSource();
-        s.buffer = pcmBuffer(state.samples[m.sampleIndex].pcm);
-        s.loop = m.loop;
-        s.playbackRate.value = Math.pow(2, (note - m.rootNote) / 12);
-
-        const merger = ac().createChannelMerger(2);
-        const gl = ac().createGain(), gr = ac().createGain();
-        gl.gain.value = 0.35 * vl / 127;
-        gr.gain.value = 0.35 * vr / 127;
-        s.connect(gl); s.connect(gr);
-        gl.connect(merger, 0, 0); gr.connect(merger, 0, 1);
-
-        merger.connect(ac().destination);
-        merger.connect(echoDelay);
-
-        s.start(curTime);
-        activeSource = s;
-        activeGains = [gl, gr];
-        playing.push(s);
-      }
+    const player = getSpcPlayer();
+    if (!player) {
+      throw new Error('libspc.js が読み込まれていないか、初期化に失敗しました。');
     }
+
+    const buffer = r.spc.buffer.slice(r.spc.byteOffset, r.spc.byteOffset + r.spc.byteLength);
+    player.load(buffer);
+    player.play();
+
+    log(`SPCプレビュー再生中... (RAM使用: ${(r.used / 1024).toFixed(1)}KB)`, 'ok');
+  } catch (e) {
+    log('プレビューの生成/再生に失敗しました: ' + (e.message || String(e)), 'err');
   }
 }
 
