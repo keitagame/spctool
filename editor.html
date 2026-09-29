@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -279,6 +278,9 @@ const ZG = {
   volR: 0x09,
 };
 
+// 発音待ちのピッチ/音量を保持するゼロページ領域: 0x40 + voice*4 (pitchLo, pitchHi, volL, volR)
+const pendBase = v => 0x40 + v * 4;
+
 function pitchForNote(note, baseNote) {
   const ratio = Math.pow(2, (note - baseNote) / 12);
   let p = Math.round(0x1000 * ratio);
@@ -374,14 +376,30 @@ function buildDriver(Assembler, opts) {
   a.bne('tick_loop');
   a.bra('main_loop');
 
+  // 発音待ちボイスごとに「ピッチ・音量 → 即KON」を行う。
+  // ピッチ設定からKONまでの間隔が短いので、前の音が新しいピッチで鳴る(異様に高い音になる)ことがない。
+  // KONは2サンプル(64サイクル)以上あけて書く必要があるが、1ボイスの処理が約70サイクルあるので満たされる。
   a.label('flush_dsp');
-  a.movA_dp(ZG.konMask);
-  a.beq('flush_end');
-  a.movA_imm(DSP.KON);
-  a.movDp_A(IO.DSPADDR);
-  a.movA_dp(ZG.konMask);
-  a.movDp_A(IO.DSPDATA);
-  a.label('flush_end');
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const base = pendBase(v);
+    const rb = v << 4;
+    const skip = 'flush_skip' + v;
+    a.movA_dp(ZG.konMask);
+    a.andA_imm(1 << v);
+    a.beq(skip);
+    const regs = [[DSP.PITCH_L, 0], [DSP.PITCH_H, 1], [DSP.VOL_L, 2], [DSP.VOL_R, 3]];
+    for (const [reg, off] of regs) {
+      a.movA_imm(rb | reg);
+      a.movDp_A(IO.DSPADDR);
+      a.movA_dp(base + off);
+      a.movDp_A(IO.DSPDATA);
+    }
+    a.movA_imm(DSP.KON);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(1 << v);
+    a.movDp_A(IO.DSPDATA);
+    a.label(skip);
+  }
   a.ret();
 
   for (let v = 0; v < NUM_VOICES; v++) {
@@ -430,22 +448,12 @@ function buildDriver(Assembler, opts) {
     a.movDp_A(IO.DSPDATA);          // DSPADDRはKOFFのまま → KOFF=0
     a.label(L('nokoff'));
 
-    // kon処理: ピッチ設定 + KONビット
+    // kon処理: kon=1 → ピッチ/音量を保留にして発音予約 / kon=2 → 音量のみ即時更新
+    const pb = pendBase(v);
     a.movA_dp(ZG.scratch3);
     a.beq(L('nokon'));
-    a.movY_dp(ZG.scratch);
-    a.movA_absY(pt.lo);
-    a.movDp_A(ZG.pitchLo);
-    a.movA_absY(pt.hi);
-    a.movDp_A(ZG.pitchHi);
-    a.movA_imm(voiceRegBase | DSP.PITCH_L);
-    a.movDp_A(IO.DSPADDR);
-    a.movA_dp(ZG.pitchLo);
-    a.movDp_A(IO.DSPDATA);
-    a.movA_imm(voiceRegBase | DSP.PITCH_H);
-    a.movDp_A(IO.DSPADDR);
-    a.movA_dp(ZG.pitchHi);
-    a.movDp_A(IO.DSPDATA);
+    a.cmpA_imm(2);
+    a.bne(L('dokon'));
     a.movA_imm(voiceRegBase | DSP.VOL_L);
     a.movDp_A(IO.DSPADDR);
     a.movA_dp(ZG.volL);
@@ -454,6 +462,17 @@ function buildDriver(Assembler, opts) {
     a.movDp_A(IO.DSPADDR);
     a.movA_dp(ZG.volR);
     a.movDp_A(IO.DSPDATA);
+    a.bra(L('nokon'));
+    a.label(L('dokon'));
+    a.movY_dp(ZG.scratch);
+    a.movA_absY(pt.lo);
+    a.movDp_A(pb + 0);
+    a.movA_absY(pt.hi);
+    a.movDp_A(pb + 1);
+    a.movA_dp(ZG.volL);
+    a.movDp_A(pb + 2);
+    a.movA_dp(ZG.volR);
+    a.movDp_A(pb + 3);
     a.movA_dp(ZG.konMask);
     a.orA_imm(1 << v);
     a.movDp_A(ZG.konMask);
@@ -471,10 +490,7 @@ function buildDriver(Assembler, opts) {
     // 次イベントのdelayを読む
     a.movY_imm(0x00);
     a._push([0xF7, z.ptrLo]);
-    a.movDp_A(z.delay);
-    a.bne(L('done'));
-    a.jmp(L('fire'));
-    a.label(L('done'));
+    a.movDp_A(z.delay);             // delay=d → 次のイベントは d+1 tick 後(プレビューと同じ解釈。0でも同tickでは発火しない)
     a.ret();
   }
 
@@ -673,6 +689,8 @@ function calcVolLR(vel, cc7, cc11, cc10) {
   return [c(Math.cos(ang)), c(Math.sin(ang))];
 }
 
+const ARP_MS = 16; // アルペジオの切替間隔(ms)。ドライバのtick(2〜16ms)とは独立
+
 function buildEventStreamForChannel(events, tickMs) {
   let cc7 = 100, cc11 = 127, cc10 = 64;
   const eventsByTick = {};
@@ -688,12 +706,16 @@ function buildEventStreamForChannel(events, tickMs) {
   const items = [];
   const activeNotes = [];
   let arpIdx = 0;
+  const arpTicks = Math.max(1, Math.round(ARP_MS / tickMs)); // アルペジオ1ステップのtick数
+  let arpTimer = 0;
   let soundingNote = -1;
   let wasSounding = false;
+  let lastVl = -1, lastVr = -1;
 
   for (let t = 0; t <= maxTick + 1; t++) {
     let ccChanged = false;
     let notesChanged = false;
+    let newAttack = false;   // このtickに新しいnoteOnがあった(同音連打の再発音判定用)
 
     if (eventsByTick[t]) {
       for (const ev of eventsByTick[t]) {
@@ -707,6 +729,7 @@ function buildEventStreamForChannel(events, tickMs) {
           if (idx >= 0) activeNotes[idx] = { note: ev.note, velocity: ev.velocity };
           else activeNotes.push({ note: ev.note, velocity: ev.velocity });
           notesChanged = true;
+          newAttack = true;
         } else if (ev.type === 'noteOff') {
           const idx = activeNotes.findIndex(n => n.note === ev.note);
           if (idx >= 0) {
@@ -726,35 +749,42 @@ function buildEventStreamForChannel(events, tickMs) {
         soundingNote = -1;
         wasSounding = false;
         arpIdx = 0;
+        arpTimer = 0;
       }
-    } else {
-      let targetObj;
-      if (activeNotes.length === 1) {
-        targetObj = activeNotes[0];
-        arpIdx = 0;
-      } else {
-        // 和音：高速アルペジオで巡回発音
-        arpIdx = arpIdx % activeNotes.length;
-        targetObj = activeNotes[arpIdx];
-        arpIdx = (arpIdx + 1) % activeNotes.length;
-      }
-
+    } else if (activeNotes.length === 1) {
+      const targetObj = activeNotes[0];
+      arpIdx = 0;
+      arpTimer = 0;
       const [vl, vr] = calcVolLR(targetObj.velocity, cc7, cc11, cc10);
-
       if (!wasSounding) {
         items.push({ tick: t, note: targetObj.note, koff: 0, kon: 1, vl, vr });
         soundingNote = targetObj.note;
         wasSounding = true;
-      } else if (activeNotes.length > 1) {
-        // 和音継続中のアルペジオ切り替え
+        lastVl = vl; lastVr = vr;
+      } else if (soundingNote !== targetObj.note || newAttack) {
+        // 音程が変わった or 同音の連打 → 一度KOFFして再発音
+        items.push({ tick: t, note: targetObj.note, koff: 1, kon: 1, vl, vr });
+        soundingNote = targetObj.note;
+        lastVl = vl; lastVr = vr;
+      } else if (ccChanged && (vl !== lastVl || vr !== lastVr)) {
+        // 発音中の音量/パン変化(CC7/10/11) → 音量だけ更新(kon=2)
+        items.push({ tick: t, note: soundingNote, koff: 0, kon: 2, vl, vr });
+        lastVl = vl; lastVr = vr;
+      }
+    } else {
+      // 和音：ARP_MS ごとに構成音を巡回して発音(毎tickではなく一定間隔)
+      if (!wasSounding || notesChanged || arpTimer <= 0) {
+        arpIdx = arpIdx % activeNotes.length;
+        const targetObj = activeNotes[arpIdx];
+        arpIdx = (arpIdx + 1) % activeNotes.length;
+        const [vl, vr] = calcVolLR(targetObj.velocity, cc7, cc11, cc10);
         items.push({ tick: t, note: targetObj.note, koff: 0, kon: 1, vl, vr });
         soundingNote = targetObj.note;
-      } else if (notesChanged || ccChanged || soundingNote !== targetObj.note) {
-        if (soundingNote !== targetObj.note) {
-          items.push({ tick: t, note: targetObj.note, koff: 1, kon: 1, vl, vr });
-          soundingNote = targetObj.note;
-        }
+        wasSounding = true;
+        lastVl = vl; lastVr = vr;
+        arpTimer = arpTicks;
       }
+      arpTimer--;
     }
   }
 
@@ -1048,6 +1078,7 @@ function previewSong() {
     const stream = buildEventStreamForChannel(byChannel[ch], tickMs);
     let curTime = t0;
     let activeSource = null;
+    let activeGains = null;
 
     for (let pos = 0; pos < stream.length; pos += 6) {
       const delay = stream[pos];
@@ -1064,6 +1095,15 @@ function previewSong() {
       if (koff && activeSource) {
         try { activeSource.stop(curTime); } catch (e) {}
         activeSource = null;
+      }
+
+      if (kon === 2) {
+        // 音量のみ更新
+        if (activeGains) {
+          activeGains[0].gain.setValueAtTime(0.35 * vl / 127, curTime);
+          activeGains[1].gain.setValueAtTime(0.35 * vr / 127, curTime);
+        }
+        continue;
       }
 
       if (kon) {
@@ -1087,6 +1127,7 @@ function previewSong() {
 
         s.start(curTime);
         activeSource = s;
+        activeGains = [gl, gr];
         playing.push(s);
       }
     }
