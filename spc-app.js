@@ -78,7 +78,7 @@ btnPlaySpc.addEventListener("click", () => toggleSpcPlay());
     }
 
     try {
-      const player = SPCPlayer.getInstance();
+      const player = new SPCPlayer();
       player.load(bufferToPlay); // パースおよびエミュレータ状態のリセット
       player.play();
 
