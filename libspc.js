@@ -5,6 +5,67 @@
 /**
  * SPC700 CPU Emulator
  */
+// ============================================================================
+// リアル音響エフェクト（臨場感向上処理）
+// ============================================================================
+
+// アナログ真空管・テープ風の温かみと滑らかなダイナミクスを与えるサチュレーション
+function analogSaturation(x) {
+  return Math.tanh(x * 1.15) * 0.9;
+}
+
+// 空間の奥行きと広がりを生み出すアーリーリフレクション（初期反射音）
+class EarlyReflections {
+  constructor(sampleRate = 32000) {
+    this.bufferL = new Float32Array(2048);
+    this.bufferR = new Float32Array(2048);
+    this.pos = 0;
+    
+    // 反射音のディレイタイム（ミリ秒）と減衰量
+    this.tapsL = [
+      { delay: Math.floor(sampleRate * 0.011), gain: 0.22 },
+      { delay: Math.floor(sampleRate * 0.024), gain: 0.15 },
+      { delay: Math.floor(sampleRate * 0.038), gain: 0.10 }
+    ];
+    this.tapsR = [
+      { delay: Math.floor(sampleRate * 0.014), gain: 0.20 },
+      { delay: Math.floor(sampleRate * 0.029), gain: 0.13 },
+      { delay: Math.floor(sampleRate * 0.042), gain: 0.08 }
+    ];
+  }
+
+  reset() {
+    this.bufferL.fill(0);
+    this.bufferR.fill(0);
+    this.pos = 0;
+  }
+
+  process(inL, inR) {
+    const mask = 2047;
+    this.bufferL[this.pos] = inL;
+    this.bufferR[this.pos] = inR;
+
+    let refL = 0, refR = 0;
+    for (let i = 0; i < this.tapsL.length; i++) {
+      const t = this.tapsL[i];
+      refL += this.bufferL[(this.pos - t.delay) & mask] * t.gain;
+    }
+    for (let i = 0; i < this.tapsR.length; i++) {
+      const t = this.tapsR[i];
+      refR += this.bufferR[(this.pos - t.delay) & mask] * t.gain;
+    }
+
+    this.pos = (this.pos + 1) & mask;
+    return [inL + refL, inR + refR];
+  }
+}
+
+// ステレオ感を自然に広げる Mid-Side エンハンサー
+function applyStereoEnhancer(inL, inR, width = 1.3) {
+  const mid = (inL + inR) * 0.5;
+  const side = (inL - inR) * 0.5 * width;
+  return [mid + side, mid - side];
+}
 class SPC700 {
   constructor(dsp) {
     this.dsp = dsp;
@@ -627,13 +688,47 @@ class SPC700 {
     this.opTable = T;
   }
 }
+// --- 定数変更 (7kHzから12kHzへ引き上げて音抜けを改善) ---
+const LP_CUTOFF_HZ = 8000;
 
+// 2次Biquadローパスフィルタークラス
+class BiquadLPF {
+  constructor(cutoff, sampleRate) {
+    const w0 = 2 * Math.PI * cutoff / sampleRate;
+    const alpha = Math.sin(w0) / (2 * 0.707); // Q = 0.707 (Butterworth特性)
+    const cosw0 = Math.cos(w0);
+
+    const b0 = (1 - cosw0) / 2;
+    const b1 = 1 - cosw0;
+    const b2 = (1 - cosw0) / 2;
+    const a0 = 1 + alpha;
+    const a1 = -2 * cosw0;
+    const a2 = 1 - alpha;
+
+    this.b0 = b0 / a0; this.b1 = b1 / a0; this.b2 = b2 / a0;
+    this.a1 = a1 / a0; this.a2 = a2 / a0;
+
+    this.x1 = 0; this.x2 = 0;
+    this.y1 = 0; this.y2 = 0;
+  }
+
+  reset() {
+    this.x1 = this.x2 = this.y1 = this.y2 = 0;
+  }
+
+  process(x) {
+    const y = this.b0 * x + this.b1 * this.x1 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1; this.x1 = x;
+    this.y2 = this.y1; this.y1 = y;
+    return y;
+  }
+}
 /**
  * SNES DSP (S-DSP) Emulator
  */
 const SDSP_RATE = 32000;
 const OUTPUT_HEADROOM = 1.0;
-const LP_CUTOFF_HZ = 6000;
+
 const LP_ALPHA = 1 - Math.exp(-2 * Math.PI * LP_CUTOFF_HZ / SDSP_RATE);
 
 function softClip(x) {
@@ -653,57 +748,78 @@ const COUNTER_RATES = [
   0, 2048, 1536, 1280, 1024, 768, 640, 512, 384, 320, 256, 192,
   160, 128, 96, 80, 64, 48, 40, 32, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1
 ];
+// --- タップ数の設定（6 または 8 などを指定）---
+const TAPS = 4; 
+const HALF_TAPS = TAPS / 2;
+const FC = 0.6; 
 
-const GAUSS_TABLE = new Int16Array([
-  0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000,
-  0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x002,
-  0x002, 0x002, 0x003, 0x003, 0x003, 0x003, 0x003, 0x004, 0x004, 0x004, 0x004, 0x004, 0x005, 0x005, 0x005, 0x005,
-  0x006, 0x006, 0x006, 0x006, 0x007, 0x007, 0x007, 0x008, 0x008, 0x008, 0x009, 0x009, 0x009, 0x00A, 0x00A, 0x00A,
-  0x00B, 0x00B, 0x00B, 0x00C, 0x00C, 0x00D, 0x00D, 0x00E, 0x00E, 0x00F, 0x00F, 0x00F, 0x010, 0x010, 0x011, 0x011,
-  0x012, 0x013, 0x013, 0x014, 0x014, 0x015, 0x015, 0x016, 0x017, 0x017, 0x018, 0x018, 0x019, 0x01A, 0x01B, 0x01B,
-  0x01C, 0x01D, 0x01D, 0x01E, 0x01F, 0x020, 0x020, 0x021, 0x022, 0x023, 0x024, 0x024, 0x025, 0x026, 0x027, 0x028,
-  0x029, 0x02A, 0x02B, 0x02C, 0x02D, 0x02E, 0x02F, 0x030, 0x031, 0x032, 0x033, 0x034, 0x035, 0x036, 0x037, 0x038,
-  0x03A, 0x03B, 0x03C, 0x03D, 0x03E, 0x040, 0x041, 0x042, 0x043, 0x045, 0x046, 0x047, 0x049, 0x04A, 0x04C, 0x04D,
-  0x04E, 0x050, 0x051, 0x053, 0x054, 0x056, 0x057, 0x059, 0x05A, 0x05C, 0x05E, 0x05F, 0x061, 0x063, 0x064, 0x066,
-  0x068, 0x06A, 0x06B, 0x06D, 0x06F, 0x071, 0x073, 0x075, 0x076, 0x078, 0x07A, 0x07C, 0x07E, 0x080, 0x082, 0x084,
-  0x086, 0x089, 0x08B, 0x08D, 0x08F, 0x091, 0x093, 0x096, 0x098, 0x09A, 0x09C, 0x09F, 0x0A1, 0x0A3, 0x0A6, 0x0A8,
-  0x0AB, 0x0AD, 0x0AF, 0x0B2, 0x0B4, 0x0B7, 0x0BA, 0x0BC, 0x0BF, 0x0C1, 0x0C4, 0x0C7, 0x0C9, 0x0CC, 0x0CF, 0x0D2,
-  0x0D4, 0x0D7, 0x0DA, 0x0DD, 0x0E0, 0x0E3, 0x0E6, 0x0E9, 0x0EC, 0x0EF, 0x0F2, 0x0F5, 0x0F8, 0x0FB, 0x0FE, 0x101,
-  0x104, 0x107, 0x10B, 0x10E, 0x111, 0x114, 0x118, 0x11B, 0x11E, 0x122, 0x125, 0x129, 0x12C, 0x130, 0x133, 0x137,
-  0x13A, 0x13E, 0x141, 0x145, 0x148, 0x14C, 0x150, 0x153, 0x157, 0x15B, 0x15F, 0x162, 0x166, 0x16A, 0x16E, 0x172,
-  0x176, 0x17A, 0x17D, 0x181, 0x185, 0x189, 0x18D, 0x191, 0x195, 0x19A, 0x19E, 0x1A2, 0x1A6, 0x1AA, 0x1AE, 0x1B2,
-  0x1B7, 0x1BB, 0x1BF, 0x1C3, 0x1C8, 0x1CC, 0x1D0, 0x1D5, 0x1D9, 0x1DD, 0x1E2, 0x1E6, 0x1EB, 0x1EF, 0x1F3, 0x1F8,
-  0x1FC, 0x201, 0x205, 0x20A, 0x20F, 0x213, 0x218, 0x21C, 0x221, 0x226, 0x22A, 0x22F, 0x233, 0x238, 0x23D, 0x241,
-  0x246, 0x24B, 0x250, 0x254, 0x259, 0x25E, 0x263, 0x267, 0x26C, 0x271, 0x276, 0x27B, 0x280, 0x284, 0x289, 0x28E,
-  0x293, 0x298, 0x29D, 0x2A2, 0x2A6, 0x2AB, 0x2B0, 0x2B5, 0x2BA, 0x2BF, 0x2C4, 0x2C9, 0x2CE, 0x2D3, 0x2D8, 0x2DC,
-  0x2E1, 0x2E6, 0x2EB, 0x2F0, 0x2F5, 0x2FA, 0x2FF, 0x304, 0x309, 0x30E, 0x313, 0x318, 0x31D, 0x322, 0x326, 0x32B,
-  0x330, 0x335, 0x33A, 0x33F, 0x344, 0x349, 0x34E, 0x353, 0x357, 0x35C, 0x361, 0x366, 0x36B, 0x370, 0x374, 0x379,
-  0x37E, 0x383, 0x388, 0x38C, 0x391, 0x396, 0x39B, 0x39F, 0x3A4, 0x3A9, 0x3AD, 0x3B2, 0x3B7, 0x3BB, 0x3C0, 0x3C5,
-  0x3C9, 0x3CE, 0x3D2, 0x3D7, 0x3DC, 0x3E0, 0x3E5, 0x3E9, 0x3ED, 0x3F2, 0x3F6, 0x3FB, 0x3FF, 0x403, 0x408, 0x40C,
-  0x410, 0x415, 0x419, 0x41D, 0x421, 0x425, 0x42A, 0x42E, 0x432, 0x436, 0x43A, 0x43E, 0x442, 0x446, 0x44A, 0x44E,
-  0x452, 0x455, 0x459, 0x45D, 0x461, 0x465, 0x468, 0x46C, 0x470, 0x473, 0x477, 0x47A, 0x47E, 0x481, 0x485, 0x488,
-  0x48C, 0x48F, 0x492, 0x496, 0x499, 0x49C, 0x49F, 0x4A2, 0x4A6, 0x4A9, 0x4AC, 0x4AF, 0x4B2, 0x4B5, 0x4B7, 0x4BA,
-  0x4BD, 0x4C0, 0x4C3, 0x4C5, 0x4C8, 0x4CB, 0x4CD, 0x4D0, 0x4D2, 0x4D5, 0x4D7, 0x4D9, 0x4DC, 0x4DE, 0x4E0, 0x4E3,
-  0x4E5, 0x4E7, 0x4E9, 0x4EB, 0x4ED, 0x4EF, 0x4F1, 0x4F3, 0x4F5, 0x4F6, 0x4F8, 0x4FA, 0x4FB, 0x4FD, 0x4FF, 0x500,
-  0x502, 0x503, 0x504, 0x506, 0x507, 0x508, 0x50A, 0x50B, 0x50C, 0x50D, 0x50E, 0x50F, 0x510, 0x511, 0x511, 0x512,
-  0x513, 0x514, 0x514, 0x515, 0x516, 0x516, 0x517, 0x517, 0x517, 0x518, 0x518, 0x518, 0x518, 0x518, 0x519, 0x519,
-]);
+const SINC_TABLE = (() => {
+  const table = new Float32Array(256 * TAPS);
+
+  
+  const sinc = (x) => {
+    const fx = x * FC;
+    if (Math.abs(fx) < 1e-6) return 1.0;
+    const px = Math.PI * fx;
+    return Math.sin(px) / px;
+  };
+
+  // Hann 窓
+  const hannWindow = (x) => {
+    return 0.5 + 0.5 * Math.cos((Math.PI * x) / HALF_TAPS);
+  };
+
+  // Blackman 窓 (より強力に高周波の減衰・サイドローブ抑制を行いたい場合)
+  const blackmanWindow = (x) => {
+    return 0.42 + 0.5 * Math.cos((Math.PI * x) / HALF_TAPS) + 0.08 * Math.cos((2 * Math.PI * x) / HALF_TAPS);
+  };
+
+  const windowedSinc = (x) => {
+    const ax = Math.abs(x);
+    if (ax >= HALF_TAPS) return 0.0;
+    
+    // 【選択】Hann 窓または Blackman 窓を選択
+    //return sinc(x) * hannWindow(x);
+    return sinc(x) * blackmanWindow(x);
+  };
+
+  for (let i = 0; i < 256; i++) {
+    const t = i / 256.0;
+    let sum = 0;
+
+    // TAPS分の重みを計算
+    for (let k = 0; k < TAPS; k++) {
+      const x = (1 - HALF_TAPS + k) - t;
+      const w = windowedSinc(x);
+      table[i * TAPS + k] = w;
+      sum += w;
+    }
+
+    // 重みの正規化（音量の変動・歪みを防止）
+    for (let k = 0; k < TAPS; k++) {
+      table[i * TAPS + k] /= sum;
+    }
+  }
+  return table;
+})();
+
 
 class DSP {
   constructor(ram) {
     this.ram = ram;
     this.regs = new Uint8Array(128);
     this.regAddr = 0;
-
+    this.er = new EarlyReflections(SDSP_RATE);
     this.voices = [];
     for (let i = 0; i < 8; i++) {
+      
       this.voices.push({
         brrAddr: 0,
         brrOffset: 0,
         pitchCounter: 0,
         history: [0, 0],
         decodedBlock: new Int16Array(16),
-        interp: new Float64Array(4),
+        interp: new Float64Array(16),
         curBlockHeader: 0,
         keyOn: false,
         keyOff: false,
@@ -716,8 +832,8 @@ class DSP {
         konDelay: 0,
       });
     }
-
-    this.gaussTable = GAUSS_TABLE;
+    this.sincTable = SINC_TABLE;
+    //this.gaussTable = GAUSS_TABLE;
     this.noiseLFSR = 0x4000;
     this.masterVolL = 0;
     this.masterVolR = 0;
@@ -730,7 +846,8 @@ class DSP {
 
     this.dcPrevInL = 0; this.dcPrevOutL = 0;
     this.dcPrevInR = 0; this.dcPrevOutR = 0;
-    this.lpL = 0; this.lpR = 0;
+    this.lpfL = new BiquadLPF(LP_CUTOFF_HZ, SDSP_RATE);
+    this.lpfR = new BiquadLPF(LP_CUTOFF_HZ, SDSP_RATE);
   }
 
   reset() {
@@ -740,6 +857,9 @@ class DSP {
     this._pendingKon = 0;
     this.echoOffset = 0;
     this.echoLength = 4;
+    this.lpfL.reset();
+    this.lpfR.reset();
+    this.er.reset();
     this.firHistL.fill(0); this.firHistR.fill(0); this.firPos = 0;
     this.dcPrevInL = this.dcPrevOutL = this.dcPrevInR = this.dcPrevOutR = 0;
     this.lpL = this.lpR = 0;
@@ -803,7 +923,43 @@ class DSP {
     const loop = this.ram[base + 2] | (this.ram[base + 3] << 8);
     return { start, loop };
   }
-
+getDSPRegisters() {
+ 
+  return new Uint8Array(this.regs);
+}
+getAllVoiceStates() {
+    return this.voices.map((v, i) => {
+      const regs = this.getVoiceRegisters(i);
+      return {
+        id: i,
+        // 内部リアルタイム状態
+        outSample: v.outSample, // -32768 ~ 32767 (直近の出力値)
+        envLevel: v.envLevel,   // 0 ~ 2047 (エンベロープ値)
+        envMode: v.envMode,     // 'off', 'attack', 'decay', 'sustain', 'release', 'kon-delay'
+        // レジスタ設定値
+        volL: regs.volL,        // -128 ~ 127
+        volR: regs.volR,        // -128 ~ 127
+        pitch: regs.pitch,      // 0 ~ 16383 (ピッチ周波数)
+        srcn: regs.srcn         // 波形ソース番号
+      };
+    });
+  }
+getVoiceRegisters(v) {
+  if (v < 0 || v > 7) return null;
+  const base = v * 0x10;
+  
+  return {
+    volL:  this.regs[base + 0x00], // 左音量 (-128 ~ 127)
+    volR:  this.regs[base + 0x01], // 右音量 (-128 ~ 127)
+    pitch: this.regs[base + 0x02] | (this.regs[base + 0x03] << 8), // ピッチ周波数 (14bit)
+    srcn:  this.regs[base + 0x04], // 波形ソース番号
+    adsr1: this.regs[base + 0x05], // ADSR1
+    adsr2: this.regs[base + 0x06], // ADSR2
+    gain:  this.regs[base + 0x07], // GAIN
+    env:   this.regs[base + 0x08], // 現在のエンデロープ値 (0 ~ 127)
+    out:   this.regs[base + 0x09]  // 直近の出力値
+  };
+}
   decodeBrrBlock(voice, addr, voiceIdx) {
     const header = this.ram[addr];
     const range = (header >> 4) & 0x0f;
@@ -854,17 +1010,18 @@ class DSP {
   }
 
   clockNoise() {
-    const rate = this.flg & 0x1f;
-    if (this._rateFires(rate)) {
-      const lfsr = this.noiseLFSR;
-      const fb = (lfsr ^ (lfsr >> 1)) & 1;
-      this.noiseLFSR = ((lfsr >> 1) & 0x3fff) | (fb << 14);
-    }
+  const rate = this.flg & 0x1f;
+  if (rate > 0 && this._rateFires(rate)) {
+    // 15bit LFSR: bit0 と bit1 の XOR を bit14 にフィードバック
+    const feedback = (this.noiseLFSR ^ (this.noiseLFSR >> 1)) & 1;
+    this.noiseLFSR = (this.noiseLFSR >> 1) | (feedback << 14);
   }
+}
 
   noiseSample() {
-    return ((this.noiseLFSR << 17) >> 17);
-  }
+  // LFSR(15bit)の最下位ビット(0か1)を符号付きの波形値に変換 (-0x4000 〜 0x3fff 程度)
+  return (this.noiseLFSR & 1) ? -0x4000 : 0x3fff;
+}
 
   stepEnvelope(voice, vIdx) {
     const a1 = this.adsr1(vIdx);
@@ -999,17 +1156,23 @@ class DSP {
     this.clockNoise();
 
     let mixL = 0, mixR = 0;
-    let eMixL = 0, eMixR = 0;
-    const konReg = this.kon | (this._pendingKon || 0);
+    let eMixL = 0, eMixR = 0; // EONが立っているボイスだけをエコーへ送る
+
+    const pendingKon = this._pendingKon || 0;
+    const konReg = this.kon;
     const koffReg = this.koff;
-    const resetFlag = (this.flg & 0x80) !== 0;
+    const resetFlag = (this.flg & 0x80) !== 0;   // FLG bit7: ソフトリセット
     this._pendingKon = 0;
 
     for (let i = 0; i < 8; i++) {
       const voice = this.voices[i];
       const bit = 1 << i;
 
-      if (konReg & bit) {
+      // 新規のKON書き込み(pendingKon)があれば、既存のラッチ状態に関わらず強制再トリガー
+      if (pendingKon & bit) {
+        this._triggerKeyOn(voice, i);
+        voice._konLatched = true;
+      } else if (konReg & bit) {
         if (!voice._konLatched) {
           this._triggerKeyOn(voice, i);
           voice._konLatched = true;
@@ -1017,6 +1180,8 @@ class DSP {
       } else {
         voice._konLatched = false;
       }
+
+      // KOFF、または FLG bit7(RESET) でリリースへ。RESET 中はエンベロープも即 0。
       voice.keyOff = ((koffReg & bit) !== 0) || resetFlag;
       if (resetFlag) {
         voice.envLevel = 0;
@@ -1051,19 +1216,21 @@ class DSP {
       if (p > 0x3fff) p = 0x3fff;
 
       const gi = (voice.pitchCounter >> 4) & 0xff;
-      const gt = this.gaussTable;
+      const stIdx = gi * TAPS;
       const ip = voice.interp;
-      let gs = (gt[255 - gi] * ip[0]) >> 10;
-      gs += (gt[511 - gi] * ip[1]) >> 10;
-      gs += (gt[256 + gi] * ip[2]) >> 10;
-      gs = (gs << 16) >> 16;
-      gs += (gt[gi] * ip[3]) >> 10;
+
+      let gs = 0;
+      for (let k = 0; k < TAPS; k++) {
+        gs += ip[k] * this.sincTable[stIdx + k];
+      }
+
       if (gs > 32767) gs = 32767; else if (gs < -32768) gs = -32768;
-      let sample = gs >> 1;
+      let sample = Math.round(gs) >> 1;
 
       if (this.non & bit) {
-        sample = this.noiseSample();
-      }
+  // 15bit LFSRの最下位ビットから適切な振幅（±16384）を作る
+  sample = (this.noiseLFSR & 1) ? -16384 : 16383;
+}
 
       const env = this.stepEnvelope(voice, i);
       sample = (sample * env) >> 11;
@@ -1117,14 +1284,24 @@ class DSP {
     let dr = ((mixR * this.mvolR) >> 7) + ((echoOutR * this.evolR) >> 7);
     if (dl > 32767) dl = 32767; else if (dl < -32768) dl = -32768;
     if (dr > 32767) dr = 32767; else if (dr < -32768) dr = -32768;
-    let outL = dl / (32768 * OUTPUT_HEADROOM);
-    let outR = dr / (32768 * OUTPUT_HEADROOM);
+
+    // 1. 正規化
+    let outL = dl / 32768.0;
+    let outR = dr / 32768.0;
 
     if (this.flg & 0x40) { outL = 0; outR = 0; }
 
-    outL = softClip(outL);
-    outR = softClip(outR);
+    // 2. 空間アーリーリフレクション（空間の奥行き・部屋の残響感を付与）
+    [outL, outR] = this.er.process(outL, outR);
 
+    // 3. ステレオエンハンサー（横方向の音場の広がりを強調）
+    [outL, outR] = applyStereoEnhancer(outL, outR, 1.3);
+
+    
+    outL = analogSaturation(outL) * 4;
+    outR = analogSaturation(outR) * 4;
+
+    // 5. DCオフセット除去フィルター
     {
       const R_DC = 0.99843;
       const yl = outL - this.dcPrevInL + R_DC * this.dcPrevOutL;
@@ -1133,12 +1310,13 @@ class DSP {
       this.dcPrevInR = outR; this.dcPrevOutR = yr; outR = yr;
     }
 
+    
     {
-      this.lpL += LP_ALPHA * (outL - this.lpL); outL = this.lpL;
-      this.lpR += LP_ALPHA * (outR - this.lpR); outR = this.lpR;
+      outL = this.lpfL.process(outL);
+      outR = this.lpfR.process(outR);
     }
-
     return [outL, outR];
+  
   }
 
   _triggerKeyOn(voice, i) {
@@ -1227,7 +1405,6 @@ class SPCEngine {
     cpu.Y = parsed.y & 0xff;
     cpu.SP = parsed.sp & 0xff;
     cpu.PC = parsed.pc & 0xffff;
-    cpu.setPSW(parsed.psw);
     cpu.cycles = 0;
 
     const f1 = parsed.ram[0xf1];
@@ -1249,32 +1426,14 @@ class SPCEngine {
     dsp.regs.set(parsed.dspRegs);
     dsp.regs[0x7c] = parsed.dspRegs[0x7c];
 
-    const konSnapshot = parsed.dspRegs[0x4c];
+    // 【修正】キーオンのラッチ状態をリセットし、曲冒頭の発音命令がスキップされないように修正
     for (let i = 0; i < 8; i++) {
-      const v = dsp.voices[i];
-      v._konLatched = ((konSnapshot >> i) & 1) === 1;
-      const envx = parsed.dspRegs[i * 0x10 + 0x08];
-      if (envx > 0) {
-        v.envLevel = Math.min(2047, envx << 4);
-        v.envMode = 'sustain';
-        const dirEntry = dsp.getSampleDirEntry(dsp.srcn(i));
-        v.brrAddr = dirEntry.start;
-        v.pitchCounter = 0;
-        v.history = [0, 0];
-        v.endFlag = false;
-        v.loopFlag = false;
-        dsp.decodeBrrBlock(v, v.brrAddr, i);
-        dsp.regs[0x7c] = parsed.dspRegs[0x7c];
-        v.interp[0] = 0; v.interp[1] = 0; v.interp[2] = 0;
-        v.interp[3] = v.decodedBlock[0];
-        v.brrOffset = 1;
-      }
+      dsp.voices[i]._konLatched = false;
     }
 
     this.loaded = true;
     this._cycleAccum = 0;
   }
-
   renderSample() {
     if (!this.loaded) return [0, 0];
 
@@ -1291,6 +1450,9 @@ class SPCEngine {
   }
 }
 
+/**
+ * Main Audio Player & Public API
+ */
 /**
  * Main Audio Player & Public API
  */
@@ -1318,20 +1480,79 @@ class SPCPlayer {
     this.scriptNode.onaudioprocess = (e) => this._process(e);
     this._connected = false;
     this.currentMeta = null;
+
+    // --- シーク・時間管理用プロパティ ---
+    this.rawBuffer = null;      // 高速再構築用のArrayBufferキャッシュ
+    this.playedSamples = 0;     // 内部生成したDSPサンプル数(32kHz基準)
+    this.isSeeking = false;     // シーク処理中フラグ
+  }
+
+  /**
+   * 現在の再生位置（秒）を取得
+   */
+  get currentTime() {
+    return this.playedSamples / SDSP_SAMPLE_RATE;
   }
 
   /**
    * SPCファイルをArrayBufferまたはUint8Arrayからロード
    */
+  
   load(buffer) {
-    const parsed = parseSPC(buffer);
+    // 再生成用にBufferを複製して保存
+    if (buffer instanceof ArrayBuffer) {
+      this.rawBuffer = buffer.slice(0);
+    } else if (ArrayBuffer.isView(buffer)) {
+      this.rawBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    }
+
+    const parsed = parseSPC(this.rawBuffer);
     this.engine.loadSPC(parsed);
     this.currentMeta = parsed.meta;
     this.srcPos = 0;
     this.haveSample = false;
     this.hL.fill(0); this.hR.fill(0);
     this.fade = 0;
+    this.playedSamples = 0;
     return parsed.meta;
+  }
+
+  /**
+   * 指定した位置（秒）へシーク（好きな場所から再生）
+   * @param {number} seconds - 再生したい位置（秒）
+   */
+  seek(seconds) {
+    if (!this.rawBuffer || !this.engine.loaded) return;
+
+    const targetSeconds = Math.max(0, seconds);
+    const targetSamples = Math.floor(targetSeconds * SDSP_SAMPLE_RATE);
+
+    const wasPlaying = this.playing;
+    this.isSeeking = true;
+
+    // 1. 初期状態にリセット
+    const parsed = parseSPC(this.rawBuffer);
+    this.engine.loadSPC(parsed);
+    this.srcPos = 0;
+    this.haveSample = false;
+    this.hL.fill(0); this.hR.fill(0);
+
+    // 2. 指定位置まで高速レンダリング（音声出力なしでCPU/DSPを進める）
+    for (let i = 0; i < targetSamples; i++) {
+      this.engine.renderSample();
+    }
+
+    this.playedSamples = targetSamples;
+    this.isSeeking = false;
+
+    // 再生中だった場合は再生状態を復元
+    if (wasPlaying) {
+      this.play();
+    }
+  }
+
+  getVoiceStates() {
+    return this.engine.dsp.getAllVoiceStates();
   }
 
   /**
@@ -1385,6 +1606,7 @@ class SPCPlayer {
     hR[0] = hR[1]; hR[1] = hR[2]; hR[2] = hR[3];
     const [l, r] = this.engine.renderSample();
     hL[3] = l; hR[3] = r;
+    this.playedSamples++; // 再生サンプル数をカウント
   }
 
   static _cubic(y0, y1, y2, y3, t) {
@@ -1393,14 +1615,42 @@ class SPCPlayer {
     const c = -0.5 * y0            + 0.5 * y2;
     return ((a * t + b) * t + c) * t + y1;
   }
+  _startVoiceTimer() {
+    if (this._voiceTimer) return;
+    this._voiceTimer = setInterval(() => {
+      if (typeof this.onVoiceInfo === 'function' && this.engine.loaded) {
+        this.onVoiceInfo(this._getVoiceInfo());
+      }
+    }, 2);
+  }
+  _stopVoiceTimer() {
+    if (this._voiceTimer) { clearInterval(this._voiceTimer); this._voiceTimer = null; }
+  }
 
+  _getVoiceInfo() {
+    const dsp = this.engine.dsp;
+    const voices = [];
+    for (let i = 0; i < 8; i++) {
+      const voice = dsp.voices[i];
+      voices.push({
+        voice: i + 1,
+        volumeL: dsp.volL(i),
+        volumeR: dsp.volR(i),
+        pitch: dsp.pitch(i),
+        envelope: voice.envLevel,
+        active: voice.envMode !== "off"
+      });
+    }
+    return voices;
+  }
   _process(e) {
     const output = e.outputBuffer;
     const left = output.getChannelData(0);
     const right = output.getChannelData(1);
     const n = left.length;
 
-    if (!this.playing || !this.engine.loaded) {
+    // シーク中や停止中・未読み込み時は無音を出力
+    if (!this.playing || !this.engine.loaded || this.isSeeking) {
       left.fill(0);
       right.fill(0);
       return;
@@ -1417,58 +1667,26 @@ class SPCPlayer {
     const fadeTarget = this.fadeTarget, fadeStep = this.fadeStep;
 
     for (let i = 0; i < n; i++) {
-      while (this.srcPos >= 1) {
+      while (this.srcPos >= 1.0) {
         this._advanceDspSample();
-        this.srcPos -= 1;
+        this.srcPos -= 1.0;
       }
-      const t = this.srcPos;
-      let l = SPCPlayer._cubic(hL[0], hL[1], hL[2], hL[3], t);
-      let r = SPCPlayer._cubic(hR[0], hR[1], hR[2], hR[3], t);
 
-      if (fade < fadeTarget) { fade = Math.min(fadeTarget, fade + fadeStep); }
-      else if (fade > fadeTarget) { fade = Math.max(fadeTarget, fade - fadeStep); }
-      l = l * 5;
-      r = r * 5;
-      const g = 0.5 - 0.5 * Math.cos(Math.PI * fade);
-      left[i] = l * g;
-      right[i] = r * g;
+      const l = SPCPlayer._cubic(hL[0], hL[1], hL[2], hL[3], this.srcPos);
+      const r = SPCPlayer._cubic(hR[0], hR[1], hR[2], hR[3], this.srcPos);
+
+      if (fade !== fadeTarget) {
+        if (fade < fadeTarget) fade = Math.min(fadeTarget, fade + fadeStep);
+        else fade = Math.max(fadeTarget, fade - fadeStep);
+      }
+
+      left[i] = l * fade;
+      right[i] = r * fade;
 
       this.srcPos += ratio;
     }
+
     this.fade = fade;
-  }
-
-  // --- シングルトン / リンク共有機能 ---
-  static getInstance() {
-    if (!SPCPlayer._sharedInstance) {
-      SPCPlayer._sharedInstance = new SPCPlayer();
-    }
-    return SPCPlayer._sharedInstance;
-  }
-
-  /**
-   * ページ内の <a> リンク(または拡張子 .spc を含むリンク)のクリックイベントを監視し、
-   * 自動的にSPCとして再生を開始させるバインド機能
-   * @param {string} selector - 対象リンクのCSSセレクタ (省略時: a[href$=".spc"], a[data-spc])
-   */
-  static bindLinks(selector = 'a[href$=".spc"], a[href*=".spc?"], a[data-spc]') {
-    document.addEventListener('click', (e) => {
-      const link = e.target.closest(selector);
-      if (link && link.href) {
-        e.preventDefault();
-        const player = SPCPlayer.getInstance();
-        player.loadUrl(link.href).catch(err => console.error('SPC load error:', err));
-      }
-    });
-  }
-}
-
-// 自動的にDOM構築完了時に <a> リンクバインドを設定
-if (typeof document !== 'undefined') {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => SPCPlayer.bindLinks());
-  } else {
-    SPCPlayer.bindLinks();
   }
 }
 
@@ -1479,4 +1697,109 @@ if (typeof window !== 'undefined') {
 }
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { SPCPlayer, parseSPC, SPC700, DSP, SPCEngine };
+}
+// ============================================================================
+// WAV Export Extension
+// ============================================================================
+
+/**
+ * PCMデータ(Float32Array)から16bit StereoのWAV Blobを生成
+ */
+function createWavBlob(leftChannel, rightChannel, sampleRate = SDSP_SAMPLE_RATE) {
+  const numChannels = 2;
+  const numSamples = leftChannel.length;
+  const bytesPerSample = 2; // 16-bit PCM
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = numSamples * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeString = (v, offset, str) => {
+    for (let i = 0; i < str.length; i++) {
+      v.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  /* RIFF header */
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(view, 8, 'WAVE');
+
+  /* fmt chunk */
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);          // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true);           // AudioFormat (1 = PCM)
+  view.setUint16(22, numChannels, true); // NumChannels
+  view.setUint32(24, sampleRate, true);  // SampleRate
+  view.setUint32(28, byteRate, true);    // ByteRate
+  view.setUint16(32, blockAlign, true);  // BlockAlign
+  view.setUint16(34, 16, true);          // BitsPerSample
+
+  /* data chunk */
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  /* Write Interleaved PCM samples */
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    let l = Math.max(-1, Math.min(1, leftChannel[i]));
+    let r = Math.max(-1, Math.min(1, rightChannel[i]));
+
+    let sL = l < 0 ? l * 0x8000 : l * 0x7FFF;
+    let sR = r < 0 ? r * 0x8000 : r * 0x7FFF;
+
+    view.setInt16(offset, sL, true);
+    view.setInt16(offset + 2, sR, true);
+    offset += 4;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+/**
+ * SPCデータ(ArrayBuffer)を直接WAV Blobにレンダリングする独立関数
+ * @param {ArrayBuffer|Uint8Array} spcBuffer - SPCバイナリデータ
+ * @param {number} durationSec - 出力する長さ（秒数）
+ * @returns {Blob} WAVファイルのBlob
+ */
+function renderSPCToWav(spcBuffer, durationSec = 180) {
+  const parsed = parseSPC(spcBuffer);
+  const engine = new SPCEngine();
+  engine.loadSPC(parsed);
+
+  const sampleRate = SDSP_SAMPLE_RATE; // 32000Hz
+  const totalSamples = Math.floor(sampleRate * Math.max(0, durationSec));
+
+  const leftChannel = new Float32Array(totalSamples);
+  const rightChannel = new Float32Array(totalSamples);
+
+  for (let i = 0; i < totalSamples; i++) {
+    const [l, r] = engine.renderSample();
+    leftChannel[i] = l;
+    rightChannel[i] = r;
+  }
+
+  return createWavBlob(leftChannel, rightChannel, sampleRate);
+}
+
+// SPCPlayerクラスにWAVエクスポート機能を追加
+SPCPlayer.prototype.exportWav = function (durationSec = 180, buffer = null) {
+  const targetBuffer = buffer || this.rawBuffer;
+  if (!targetBuffer) {
+    throw new Error('No SPC buffer available for WAV export.');
+  }
+  return renderSPCToWav(targetBuffer, durationSec);
+};
+function pitchToNote(pitch) {
+    if (!pitch) return "-";
+    const freq = 32000 * pitch / 4096;
+    if (!isFinite(freq) || freq <= 0) return "-";
+
+    const noteNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const midi = Math.round(69 + 12 * Math.log2(freq / 440));
+    const octave = Math.floor(midi / 12) - 1;
+    const name = noteNames[((midi % 12) + 12) % 12];
+
+    return `${name}${octave}`;
 }
