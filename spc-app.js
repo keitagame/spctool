@@ -2,6 +2,7 @@
    App layer: UI wiring, playback, replace & export
    ========================================================================= */
 (() => {
+   const player = new SPCPlayer();
   const dropzone     = document.getElementById("dropzone");
   const fileInput     = document.getElementById("fileInput");
   const metaBar       = document.getElementById("metaBar");
@@ -78,7 +79,7 @@ btnPlaySpc.addEventListener("click", () => toggleSpcPlay());
     }
 
     try {
-      const player = new SPCPlayer();
+      
       player.load(bufferToPlay); // パースおよびエミュレータ状態のリセット
       player.play();
 
@@ -96,7 +97,7 @@ btnPlaySpc.addEventListener("click", () => toggleSpcPlay());
     if (isSpcPlaying) {
       if (typeof SPCPlayer !== "undefined") {
         try {
-          const player = new SPCPlayer();
+          
           player.stop();
         } catch (e) {}
       }
