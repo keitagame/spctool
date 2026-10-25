@@ -1191,7 +1191,7 @@ let spcPlayer = null;
 
 function getSpcPlayer() {
   if (!spcPlayer && typeof SPCPlayer !== 'undefined') {
-    spcPlayer = SPCPlayer.getInstance();
+    spcPlayer = new SPCPlayer();
   }
   return spcPlayer;
 }
