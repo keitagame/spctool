@@ -96,7 +96,7 @@ btnPlaySpc.addEventListener("click", () => toggleSpcPlay());
     if (isSpcPlaying) {
       if (typeof SPCPlayer !== "undefined") {
         try {
-          const player = SPCPlayer.getInstance();
+          const player = new SPCPlayer();
           player.stop();
         } catch (e) {}
       }
