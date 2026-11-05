@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MML → SPC エディタ</title>
+<style>
+:root{--bg:#14181a;--panel:#1c2225;--line:#2f393d;--ink:#e4ebe6;--dim:#8a9a93;--acc:#7fd6a0;--acc2:#e8b64c;--err:#ef7d6b}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 "Hiragino Sans","Yu Gothic UI","Noto Sans JP",system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:28px 18px 60px}
+h1{font-size:24px;margin:0 0 4px}
+.lead{color:var(--dim);margin:0 0 20px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px 18px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px;display:flex;align-items:baseline;gap:10px}
+h2 small{color:var(--dim);font-weight:400;font-size:13px}
+button,input,textarea{background:#0f1315;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:6px 10px;font:inherit}
+button{cursor:pointer}button:hover{border-color:var(--acc)}
+:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+button.primary{background:var(--acc);color:#0d1a12;border-color:var(--acc);font-weight:700}
+input[type=file]{padding:0;border:0;background:none;color:var(--dim);max-width:100%}
+.srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--line)}
+.idx{color:var(--acc2);min-width:2.4em}
+.sname{flex:1;min-width:8em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow label{color:var(--dim);font-size:13px;display:flex;align-items:center;gap:6px}
+.srow input[type=number]{width:70px;padding:3px 6px}
+.nn{color:var(--acc2);min-width:2.6em}
+textarea{width:100%;min-height:300px;resize:vertical;font:14px/1.6 ui-monospace,Menlo,Consolas,monospace;tab-size:2}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.status{margin-top:10px;min-height:1.6em}.status.ok{color:var(--acc)}.status.err{color:var(--err)}
+.hint{color:var(--dim);font-size:13px;margin:8px 0 0}
+details{color:var(--dim);font-size:13px}summary{cursor:pointer;color:var(--ink);font-size:15px}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0 0}
+dt{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--acc2)}dd{margin:0}
+</style>
+<script src="libspc.js"></script>
+</head>
+<body>
+<main>
+<h1>MML → SPC エディタ</h1>
+<p class="lead">MMLを書いてSNES用の .spc を作ります。<code>@番号</code> でBRRサンプルを曲の途中で切り替えられます。すべてブラウザ内で処理されます。</p>
+
+<section>
+<h2>サンプル<small>.BRR / WAV / MP3 / OGG</small></h2>
+<input type="file" id="sampleFile" accept=".brr,audio/*" multiple>
+<div id="sampleList"></div>
+<p class="hint">各行の <b>@番号</b> がMMLで使う番号です。基準ノートは元の高さで鳴るMIDIノート(60=C4)です。</p>
+</section>
+
+<section>
+<h2>MML</h2>
+<textarea id="mml" spellcheck="false" wrap="off"></textarea>
+<div class="actions">
+<button class="primary" id="play">▶ 再生</button><button id="stop">■ 停止</button><button id="build">SPCをダウンロード</button>
+</div>
+<div id="status" class="status" role="status" aria-live="polite"></div>
+<p class="hint">Ctrl/Cmd + Enter で再生</p>
+</section>
+
+<section>
+<details>
+<summary>MMLの書き方</summary>
+<dl>
+<dt>A〜H</dt><dd>行頭でチャンネル指定(最大8音)。<code>AB</code> のように複数指定すると同じ内容が入ります。1chは同時に1音まで</dd>
+<dt>cdefgab</dt><dd>音符。<code>+</code>/<code>#</code>で半音上、<code>-</code>で半音下。数字は音長(<code>c4</code>=4分、<code>c8.</code>=付点)</dd>
+<dt>r</dt><dd>休符(<code>r4</code>)</dd>
+<dt>^ &amp;</dt><dd><code>c4^8</code> は音長を足す。<code>c4&amp;c4</code> はタイ、<code>c&amp;d</code> は再発音なしで音程だけ変えるスラー</dd>
+<dt>o l &lt; &gt;</dt><dd><code>o4</code> オクターブ、<code>l8</code> 既定の音長、<code>&gt;</code> 1つ上、<code>&lt;</code> 1つ下</dd>
+<dt>@n</dt><dd>サンプル(BRR)をn番に切り替え。途中で何度でも切り替え可能</dd>
+<dt>t v p q k</dt><dd><code>t120</code> テンポ(全ch共通)、<code>v0-15</code> 音量、<code>p0-127</code> パン(64=中央)、<code>q1-8</code> 音の長さ(8=最長)、<code>k-12</code> 移調</dd>
+<dt>[ ]n</dt><dd>n回繰り返し(<code>[cde]4</code>)</dd>
+<dt>L</dt><dd>ループ位置。ループさせたい全chに同じ位置で書きます</dd>
+<dt>#</dt><dd><code>#title</code> <code>#artist</code> <code>#game</code> <code>#tempo</code>(初期テンポ) <code>#echo</code>(0〜127、0でOFF)</dd>
+<dt>;</dt><dd>行末までコメント</dd>
+</dl>
+</details>
+</section>
+</main>
+
+<script>
+class Assembler {
+  constructor(origin) {
+    this.origin = origin;
+    this.ops = [];
+    this.labels = {};
+    this.pos = origin;
+  }
+
+  label(name) { this.labels[name] = this.pos; }
+  _push(bytes) { this.ops.push({ bytes, addr: this.pos }); this.pos += bytes.length; }
+  db(...bytes) { this._push(bytes); }
+  dw(word) { this._push([word & 0xFF, (word >> 8) & 0xFF]); }
+
+  nop() { this._push([0x00]); }
+  sleep() { this._push([0xEF]); }
+  stop() { this._push([0xFF]); }
+  di() { this._push([0xC0]); }
+  ei() { this._push([0xA0]); }
+  clrp() { this._push([0x20]); }
+  setp() { this._push([0x40]); }
+  clrc() { this._push([0x60]); }
+  setc() { this._push([0x80]); }
+
+  movA_imm(v) { this._push([0xE8, v & 0xFF]); }
+  movX_imm(v) { this._push([0xCD, v & 0xFF]); }
+  movY_imm(v) { this._push([0x8D, v & 0xFF]); }
+
+  movA_dp(dp) { this._push([0xE4, dp & 0xFF]); }
+  movX_dp(dp) { this._push([0xF8, dp & 0xFF]); }
+  movY_dp(dp) { this._push([0xEB, dp & 0xFF]); }
+  movA_dpX(dp) { this._push([0xF4, dp & 0xFF]); }
+
+  movDp_A(dp) { this._push([0xC4, dp & 0xFF]); }
+  movDp_X(dp) { this._push([0xD8, dp & 0xFF]); }
+  movDp_Y(dp) { this._push([0xCB, dp & 0xFF]); }
+  movDpX_A(dp) { this._push([0xD4, dp & 0xFF]); }
+  movDpY_X(dp) { this._push([0xD9, dp & 0xFF]); }
+  movDpX_Y(dp) { this._push([0xDB, dp & 0xFF]); }
+
+  movDp_imm(dp, v) { this._push([0x8F, v & 0xFF, dp & 0xFF]); }
+
+  movA_abs(addr) { this._push([0xE5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movAbs_A(addr) { this._push([0xC5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movA_absX(addr) { this._push([0xF5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movAbsX_A(addr) { this._push([0xD5, addr & 0xFF, (addr >> 8) & 0xFF]); }
+  movA_absY(addr) { this._push([0xF6, addr & 0xFF, (addr >> 8) & 0xFF]); }
+
+  movA_X() { this._push([0x7D]); }
+  movA_Y() { this._push([0xDD]); }
+  movX_A() { this._push([0x5D]); }
+  movY_A() { this._push([0xFD]); }
+  movSP_X() { this._push([0xBD]); }
+  movX_SP() { this._push([0x9D]); }
+
+  movYA_dp(dp) { this._push([0xBA, dp & 0xFF]); }
+  movDp_YA(dp) { this._push([0xDA, dp & 0xFF]); }
+
+  movA_indX() { this._push([0xE6]); }
+  movIndX_A() { this._push([0xC6]); }
+  movIndXInc_A() { this._push([0xAF]); }
+  movA_indXInc() { this._push([0xBF]); }
+
+  incA() { this._push([0xBC]); }
+  decA() { this._push([0x9C]); }
+  incX() { this._push([0x3D]); }
+  decX() { this._push([0x1D]); }
+  incY() { this._push([0xFC]); }
+  decY() { this._push([0xDC]); }
+  incDp(dp) { this._push([0xAB, dp & 0xFF]); }
+  decDp(dp) { this._push([0x8B, dp & 0xFF]); }
+
+  cmpA_imm(v) { this._push([0x68, v & 0xFF]); }
+  cmpA_dp(dp) { this._push([0x64, dp & 0xFF]); }
+  cmpX_imm(v) { this._push([0xC8, v & 0xFF]); }
+  cmpY_imm(v) { this._push([0xAD, v & 0xFF]); }
+
+  adcA_imm(v) { this._push([0x88, v & 0xFF]); }
+  andA_imm(v) { this._push([0x28, v & 0xFF]); }
+  orA_imm(v) { this._push([0x08, v & 0xFF]); }
+  orDp_dp(dst, src) { this._push([0x09, src & 0xFF, dst & 0xFF]); }
+
+  _branch(opcode, labelName) {
+    const op = { size: 2, addr: this.pos, branch: { opcode, labelName } };
+    this.ops.push(op);
+    this.pos += 2;
+  }
+
+  bra(label) { this._branch(0x2F, label); }
+  beq(label) { this._branch(0xF0, label); }
+  bne(label) { this._branch(0xD0, label); }
+  bcs(label) { this._branch(0xB0, label); }
+  bcc(label) { this._branch(0x90, label); }
+  bmi(label) { this._branch(0x30, label); }
+  bpl(label) { this._branch(0x10, label); }
+
+  call(labelOrAddr) {
+    if (typeof labelOrAddr === 'string') {
+      const op = { size: 3, addr: this.pos, callLabel: labelOrAddr };
+      this.ops.push(op);
+      this.pos += 3;
+    } else {
+      this._push([0x3F, labelOrAddr & 0xFF, (labelOrAddr >> 8) & 0xFF]);
+    }
+  }
+
+  ret() { this._push([0x6F]); }
+
+  jmp(labelName) {
+    this.ops.push({ size: 3, addr: this.pos, jmpLabel: labelName });
+    this.pos += 3;
+  }
+
+  assemble() {
+    const labels = this.labels;
+    const bytes = [];
+    for (const op of this.ops) {
+      if (op.bytes) {
+        bytes.push(...op.bytes);
+      } else if (op.branch) {
+        const target = labels[op.branch.labelName];
+        if (target === undefined) throw new Error('Unknown label: ' + op.branch.labelName);
+        const nextAddr = op.addr + 2;
+        const rel = target - nextAddr;
+        if (rel < -128 || rel > 127) throw new Error('Branch out of range to ' + op.branch.labelName + ' rel=' + rel);
+        bytes.push(op.branch.opcode, rel & 0xFF);
+      } else if (op.jmpLabel) {
+        const target = labels[op.jmpLabel];
+        if (target === undefined) throw new Error('Unknown label: ' + op.jmpLabel);
+        bytes.push(0x5F, target & 0xFF, (target >> 8) & 0xFF);
+      } else if (op.callLabel) {
+        const target = labels[op.callLabel];
+        if (target === undefined) throw new Error('Unknown label: ' + op.callLabel);
+        bytes.push(0x3F, target & 0xFF, (target >> 8) & 0xFF);
+      } else {
+        throw new Error('Unresolved op');
+      }
+    }
+    return { bytes: new Uint8Array(bytes), labels, endAddr: this.pos };
+  }
+}
+
+const DSPregs = {
+  VOL_L: 0x00, VOL_R: 0x01, PITCH_L: 0x02, PITCH_H: 0x03, SRCN: 0x04,
+  ADSR1: 0x05, ADSR2: 0x06, GAIN: 0x07, ENVX: 0x08, OUTX: 0x09,
+  MVOL_L: 0x0C, MVOL_R: 0x1C, EVOL_L: 0x2C, EVOL_R: 0x3C,
+  KON: 0x4C, KOFF: 0x5C, FLG: 0x6C, ENDX: 0x7C,
+  EFB: 0x0D, PMON: 0x2D, NON: 0x3D, EON: 0x4D, DIR: 0x5D, ESA: 0x6D, EDL: 0x7D,
+};
+
+const IO = {
+  TEST: 0xF0, CONTROL: 0xF1,
+  DSPADDR: 0xF2, DSPDATA: 0xF3,
+  T0TARGET: 0xFA, T1TARGET: 0xFB, T2TARGET: 0xFC,
+  T0OUT: 0xFD, T1OUT: 0xFE, T2OUT: 0xFF,
+};
+
+const NUM_VOICES = 8;
+
+function zpFor(voice) {
+  const base = 0x10 + voice * 6;
+  return {
+    ptrLo: base + 0,
+    ptrHi: base + 1,
+    delay: base + 2,
+    baseNote: base + 3,
+    curNote: base + 4,
+    spare: base + 5,
+  };
+}
+
+const ZG = {
+  pitchLo: 0x00,
+  pitchHi: 0x01,
+  tickPending: 0x02,
+  koff: 0x03,
+  mode: 0x04,
+  srcn: 0x05,
+  konMask: 0x06,
+  koffMask: 0x07,
+  volL: 0x08,
+  volR: 0x09,
+};
+
+const pendBase = v => 0x40 + v * 5;
+
+// ピッチ計算 (手動ファインチューン対応)
+function pitchForNote(note, baseNote, fineTune = 0) {
+  const semitones = (note - baseNote) + (fineTune / 100);
+  const ratio = Math.pow(2, semitones / 12);
+  let p = Math.round(0x1000 * ratio);
+  if (p < 1) p = 1;
+  if (p > 0x3FFF) p = 0x3FFF;
+  return p;
+}
+
+
+function buildDriver(Assembler, opts) {
+  const origin = opts.origin;
+  const dirPage = opts.dirPage;
+  const pitchTableAddrs = opts.pitchTableAddrs;
+  const srcn = opts.srcn;
+  const streamAddrs = opts.streamAddrs;
+  const t0Target = opts.t0Target;
+
+  const a = new Assembler(origin);
+  const zp = [];
+  for (let v = 0; v < NUM_VOICES; v++) zp.push(zpFor(v));
+
+  a.label('start');
+  a.di();
+  a.clrp();
+  a.movX_imm(0xFF);
+  a.movSP_X();
+
+  a.movA_imm(0x00);
+  a.movDp_A(IO.CONTROL);
+
+  const setDsp = (reg, val) => {
+    a.movA_imm(reg);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(val);
+    a.movDp_A(IO.DSPDATA);
+  };
+  setDsp(DSPregs.FLG, opts.echo ? 0x00 : 0x20);
+  setDsp(DSPregs.KON, 0x00);
+  setDsp(DSPregs.KOFF, 0x00);
+  setDsp(DSPregs.MVOL_L, 0x7F);
+  setDsp(DSPregs.MVOL_R, 0x7F);
+  setDsp(DSPregs.EVOL_L, opts.echo);
+  setDsp(DSPregs.EVOL_R, opts.echo);
+  setDsp(DSPregs.EFB, 0x30);
+  setDsp(DSPregs.EON, opts.echo ? 0xFF : 0);
+  setDsp(DSPregs.EDL, 0x03);
+  setDsp(DSPregs.ESA, 0xE0);
+  setDsp(DSPregs.NON, 0x00);
+  setDsp(DSPregs.PMON, 0x00);
+  setDsp(DSPregs.DIR, dirPage & 0xFF);
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const b = v << 4;
+    setDsp(b | DSPregs.VOL_L, 0x7F);
+    setDsp(b | DSPregs.VOL_R, 0x7F);
+    setDsp(b | DSPregs.ADSR1, 0x00); // Bit7=0 でADSR無効化
+setDsp(b | DSPregs.GAIN,  0x7F); // Direct GAIN: 最大音量(127)を維持
+    setDsp(b | DSPregs.SRCN, srcn[v] & 0xFF);
+  }
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const z = zp[v];
+    const addr = streamAddrs[v];
+    a.movA_imm(addr & 0xFF);
+    a.movDp_A(z.ptrLo);
+    a.movA_imm((addr >> 8) & 0xFF);
+    a.movDp_A(z.ptrHi);
+    a.movA_imm(opts.firstDelays[v] & 0xFF);
+    a.movDp_A(z.delay);
+  }
+  a.movA_imm(0x00);
+  a.movDp_A(ZG.konMask);
+  a.movDp_A(ZG.koffMask);
+
+  a.movA_imm(t0Target & 0xFF);
+  a.movDp_A(IO.T0TARGET);
+  a.movA_imm(0x01);
+  a.movDp_A(IO.CONTROL);
+
+  a.label('main_loop');
+  a.movA_dp(IO.T0OUT);
+  a.beq('main_loop');
+  a.movDp_A(ZG.tickPending);
+
+  a.label('tick_loop');
+  a.movA_imm(0x00);
+  a.movDp_A(ZG.konMask);
+  a.movDp_A(ZG.koffMask);
+  for (let v = 0; v < NUM_VOICES; v++) {
+    a.call('voice' + v + '_tick');
+  }
+  a.call('flush_dsp');
+  a.decDp(ZG.tickPending);
+  a.bne('tick_loop');
+  a.bra('main_loop');
+
+  a.label('flush_dsp');
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const base = pendBase(v);
+    const rb = v << 4;
+    const skip = 'flush_skip' + v;
+    a.movA_dp(ZG.konMask);
+    a.andA_imm(1 << v);
+    a.beq(skip);
+    const regs = [[DSPregs.PITCH_L, 0], [DSPregs.PITCH_H, 1], [DSPregs.VOL_L, 2], [DSPregs.VOL_R, 3], [DSPregs.SRCN, 4]];
+    for (const [reg, off] of regs) {
+      a.movA_imm(rb | reg);
+      a.movDp_A(IO.DSPADDR);
+      a.movA_dp(base + off);
+      a.movDp_A(IO.DSPDATA);
+    }
+    a.movA_imm(DSPregs.KON);
+    a.movDp_A(IO.DSPADDR);
+    a.movA_imm(1 << v);
+    a.movDp_A(IO.DSPDATA);
+    a.label(skip);
+  }
+  a.ret();
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const z = zp[v];
+    const voiceRegBase = v << 4;
+    
+    const L = (n) => 'voice' + v + '_' + n;
+
+    a.label(L('tick'));
+    a.movA_dp(z.delay);
+    a.beq(L('fire'));
+    a.cmpA_imm(0xFF);
+    a.beq(L('idle'));
+    a.decDp(z.delay);
+    a.label(L('idle'));
+    a.ret();
+
+    a.label(L('fire'));
+    const rd = (off, dst) => { a.movY_imm(off); a._push([0xF7, z.ptrLo]); a.movDp_A(dst); };
+    rd(1, ZG.pitchLo); rd(2, ZG.koff); rd(3, ZG.mode); rd(4, ZG.volL); rd(5, ZG.volR); rd(6, ZG.pitchHi); rd(7, ZG.srcn);
+    const wr = (reg, src) => { a.movA_imm(reg); a.movDp_A(IO.DSPADDR); a.movA_dp(src); a.movDp_A(IO.DSPDATA); };
+    a.movA_dp(ZG.koff);
+    a.cmpA_imm(0xFF);
+    a.bne(L('notend'));
+    a.movA_imm(0xFF); a.movDp_A(z.delay); a.ret();
+    a.label(L('notend'));
+    a.cmpA_imm(0xFE);
+    a.bne(L('notjump'));
+    a.movA_dp(ZG.pitchLo); a.movDp_A(z.ptrLo);
+    a.movA_dp(ZG.pitchHi); a.movDp_A(z.ptrHi);
+    a.jmp(L('loaddelay'));
+    a.label(L('notjump'));
+    a.movA_dp(ZG.koff);
+    a.beq(L('nokoff'));
+    a.movA_imm(DSPregs.KOFF); a.movDp_A(IO.DSPADDR);
+    a.movA_imm(1 << v); a.movDp_A(IO.DSPDATA);
+    a.movY_imm(0x20); a.label(L('kwait')); a.decY(); a.bne(L('kwait'));
+    a.movA_imm(0x00); a.movDp_A(IO.DSPDATA);
+    a.movY_imm(0x18); a.label(L('kwait2')); a.decY(); a.bne(L('kwait2'));
+    a.label(L('nokoff'));
+    a.movA_dp(ZG.mode);
+    a.beq(L('advance'));
+    a.cmpA_imm(2);
+    a.bne(L('dokon'));
+    wr(voiceRegBase | DSPregs.VOL_L, ZG.volL); wr(voiceRegBase | DSPregs.VOL_R, ZG.volR);
+    wr(voiceRegBase | DSPregs.PITCH_L, ZG.pitchLo); wr(voiceRegBase | DSPregs.PITCH_H, ZG.pitchHi);
+    a.bra(L('advance'));
+    a.label(L('dokon'));
+    const pb = pendBase(v);
+    const cp = (off, src) => { a.movA_dp(src); a.movDp_A(pb + off); };
+    cp(0, ZG.pitchLo); cp(1, ZG.pitchHi); cp(2, ZG.volL); cp(3, ZG.volR); cp(4, ZG.srcn);
+    a.movA_dp(ZG.konMask); a.orA_imm(1 << v); a.movDp_A(ZG.konMask);
+    a.label(L('advance'));
+    a.clrc(); a.movA_dp(z.ptrLo); a.adcA_imm(8); a.movDp_A(z.ptrLo);
+    a.bcc(L('nocarry')); a.incDp(z.ptrHi);
+    a.label(L('nocarry'));
+    a.label(L('loaddelay'));
+    a.movY_imm(0x00); a._push([0xF7, z.ptrLo]); a.movDp_A(z.delay);
+    a.ret();
+  }
+
+  return a.assemble();
+}
+
+
+function encodeBRR(samples, loop) {
+  let len = samples.length;
+  if (loop && len >= 32) len = len - (len % 16);
+  const nBlocks = Math.max(1, Math.ceil(len / 16));
+  const padded = new Int16Array(nBlocks * 16);
+
+  let peak = 0;
+  for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(samples[i] / 2));
+  const gain = peak > 14336 ? 14336 / peak : 1;
+  for (let i = 0; i < len; i++) padded[i] = Math.round(samples[i] / 2 * gain);
+
+  const out = [];
+  for (let b = 0; b < nBlocks; b++) {
+    const block = padded.subarray(b * 16, b * 16 + 16);
+    const isLast = (b === nBlocks - 1);
+    const { shift, nibbles } = bestShiftForBlock(block);
+
+    let header = (shift & 0x0F) << 4;
+    if (isLast) header |= 0x01;
+    if (loop) header |= 0x02;
+    out.push(header);
+    for (let i = 0; i < 16; i += 2) {
+      const hi = nibbles[i] & 0x0F;
+      const lo = nibbles[i + 1] & 0x0F;
+      out.push((hi << 4) | lo);
+    }
+  }
+  return { bytes: new Uint8Array(out), blockCount: nBlocks, loopOffset: 0 };
+}
+
+function bestShiftForBlock(block) {
+  for (let shift = 0; shift <= 12; shift++) {
+    const step = shift === 0 ? 0.5 : (1 << (shift - 1));
+    let fits = true;
+    for (let i = 0; i < 16; i++) {
+      const n = Math.round(block[i] / step);
+      if (n > 7 || n < -8) { fits = false; break; }
+    }
+    if (fits || shift === 12) {
+      const nibbles = new Int8Array(16);
+      for (let i = 0; i < 16; i++) {
+        let n = Math.round(block[i] / step);
+        if (n > 7) n = 7;
+        if (n < -8) n = -8;
+        nibbles[i] = n;
+      }
+      return { shift, nibbles };
+    }
+  }
+  return { shift: 12, nibbles: new Int8Array(16) };
+}
+
+// BRR → PCM デコーダー (BRRファイルの試聴用)
+function decodeBRRtoPCM(brrBytes) {
+  const numBlocks = Math.floor(brrBytes.length / 9);
+  const pcm = new Int16Array(numBlocks * 16);
+  let p1 = 0, p2 = 0;
+  let idx = 0;
+
+  for (let b = 0; b < numBlocks; b++) {
+    const header = brrBytes[b * 9];
+    const shift = (header >> 4) & 0x0F;
+    const filter = (header >> 2) & 0x03;
+
+    for (let i = 0; i < 8; i++) {
+      const byte = brrBytes[b * 9 + 1 + i];
+      const nibbles = [(byte >> 4) & 0x0F, byte & 0x0F];
+
+      for (let n = 0; n < 2; n++) {
+        let nib = nibbles[n];
+        if (nib >= 8) nib -= 16;
+
+        let s = 0;
+        if (shift <= 12) {
+          s = nib << shift;
+          if (shift > 0) s >>= 1;
+        } else {
+          s = (nib < 0) ? -2048 : 0;
+        }
+
+        let out = s;
+        if (filter === 1) out += p1 * 15 / 16;
+        else if (filter === 2) out += p1 * 61 / 32 - p2 * 15 / 16;
+        else if (filter === 3) out += p1 * 115 / 64 - p2 * 13 / 16;
+
+        out = Math.max(-32768, Math.min(32767, Math.round(out)));
+        p2 = p1;
+        p1 = out;
+        pcm[idx++] = out;
+      }
+    }
+  }
+  return pcm;
+}
+
+// BRRファイル パース処理
+async function parseBRRFile(file) {
+  const ab = await file.arrayBuffer();
+  const u8 = new Uint8Array(ab);
+  let loopOffset = 0;
+  let brrBytes = u8;
+
+  if (u8.length % 9 === 2) {
+    loopOffset = u8[0] | (u8[1] << 8);
+    brrBytes = u8.subarray(2);
+  } else if (u8.length % 9 !== 0) {
+    throw new Error('有効なBRRファイルではありません (サイズエラー)');
+  }
+
+  let hasLoop = false;
+  for (let b = 0; b < brrBytes.length; b += 9) {
+    if (brrBytes[b] & 0x02) { hasLoop = true; break; }
+  }
+
+  const pcm = decodeBRRtoPCM(brrBytes);
+  return { name: file.name, brrBytes, pcm, loopOffset, hasLoop };
+}
+
+
+const HEADER_MAGIC = 'SNES-SPC700 Sound File Data v0.30';
+
+function buildSpcFile({ ram, dsp, pc, a = 0, x = 0, y = 0, psw = 0x02, sp = 0xEF, title = '', artist = '', game = '', seconds = 180, fadeMs = 2000 }) {
+  const buf = new Uint8Array(0x10200);
+  const view = new DataView(buf.buffer);
+
+  writeAscii(buf, 0, HEADER_MAGIC);
+  buf[0x21] = 0x1A;
+  buf[0x22] = 0x1A;
+  buf[0x23] = 26;
+  buf[0x24] = 30;
+
+  view.setUint16(0x25, pc & 0xFFFF, true);
+  buf[0x27] = a & 0xFF;
+  buf[0x28] = x & 0xFF;
+  buf[0x29] = y & 0xFF;
+  buf[0x2A] = psw & 0xFF;
+  buf[0x2B] = sp & 0xFF;
+
+  writeAscii(buf, 0x2E, title.slice(0, 32));
+  writeAscii(buf, 0x4E, game.slice(0, 32));
+  writeAscii(buf, 0x6E, 'spc-builder'.slice(0, 16));
+  writeAscii(buf, 0x7E, ''.slice(0, 32));
+  writeAscii(buf, 0x9E, '20260101');
+  writeAscii(buf, 0xA9, String(Math.max(1, Math.min(999, Math.ceil(seconds)))).padStart(3, '0'));
+  writeAscii(buf, 0xAC, String(Math.max(0, Math.min(99999, Math.round(fadeMs)))).padStart(5, '0'));
+  writeAscii(buf, 0xB1, artist.slice(0, 32));
+  buf[0xD1] = 0;
+  buf[0xD2] = 0;
+
+  buf.set(ram, 0x100);
+  buf.set(dsp, 0x10100);
+
+  return buf;
+}
+
+function writeAscii(buf, offset, str) {
+  for (let i = 0; i < str.length; i++) {
+    buf[offset + i] = str.charCodeAt(i) & 0xFF;
+  }
+}
+
+
+async function decodeToPcm32k(file) {
+  const ab = await file.arrayBuffer();
+  const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, 32000);
+  const buf = await new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej));
+  const len = Math.max(16, Math.ceil(buf.duration * 32000));
+  const off = new OfflineAudioContext(1, len, 32000);
+  const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+  const out = await off.startRendering();
+  const f = out.getChannelData(0);
+  let peak = 0; for (let i = 0; i < f.length; i++) peak = Math.max(peak, Math.abs(f[i]));
+  const g = peak > 0 ? 0.9 / peak : 1;
+  const pcm = new Int16Array(f.length);
+  for (let i = 0; i < f.length; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(f[i] * g * 32767)));
+  return pcm;
+}
+
+
+let actx = null;
+function ac() { return actx || (actx = new (window.AudioContext || window.webkitAudioContext)()); }
+function pcmBuffer(pcm) { const b = ac().createBuffer(1, pcm.length, 32000); const d = b.getChannelData(0); for (let i = 0; i < pcm.length; i++) d[i] = pcm[i] / 32768; return b; }
+function previewSample(i) { const s = ac().createBufferSource(); s.buffer = pcmBuffer(state.samples[i].pcm); s.connect(ac().destination); s.start(); }
+
+let spcPlayer = null;
+
+function getSpcPlayer() {
+  if (!spcPlayer && typeof SPCPlayer !== 'undefined') {
+    spcPlayer = new SPCPlayer();
+  }
+  return spcPlayer;
+}
+
+function stopPreview() {
+  const player = getSpcPlayer();
+  if (player) {
+    if (typeof player.stop === 'function') {
+      player.stop();
+    } else if (typeof player.pause === 'function') {
+      player.pause();
+    }
+  }
+}
+
+
+// ===== MML コンパイラ =====
+const WHOLE = 960, PPQ = 240, TICK_MS = 4;
+const SEMI = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
+class MMLError extends Error { constructor(m, line) { super(m); this.line = line; } }
+const state = { samples: [] };
+
+function waveSample(name, f) {
+  const pcm = new Int16Array(32);
+  for (let i = 0; i < 32; i++) pcm[i] = Math.round(f(i / 32) * 16000);
+  return { name, pcm, loop: true, root: 83, fine: -21 };
+}
+state.samples.push(
+  waveSample('内蔵 矩形波', x => x < .5 ? 1 : -1),
+  waveSample('内蔵 三角波', x => x < .5 ? 4 * x - 1 : 3 - 4 * x),
+  waveSample('内蔵 ノコギリ波', x => 1 - 2 * x));
+
+function tokenize(text, lines) {
+  const re = /\s*(?:([a-g])([+#-]*)(\d*)(\.*)|(r)(\d*)(\.*)|([ltvpoq@k])(-?\d+)(\.*)|(\^)(\d*)(\.*)|([<>&L\[])|(\])(\d*))/y;
+  const out = []; let pos = 0;
+  while (pos < text.length) {
+    let s = pos; while (s < text.length && /\s/.test(text[s])) s++;
+    if (s >= text.length) break;
+    re.lastIndex = pos;
+    const m = re.exec(text), line = lines[s];
+    if (!m) throw new MMLError(`解釈できない文字 '${text[s]}'`, line);
+    pos = re.lastIndex;
+    if (m[1]) out.push({ t: 'n', k: m[1], acc: m[2], len: m[3], dots: m[4].length, line });
+    else if (m[5]) out.push({ t: 'r', len: m[6], dots: m[7].length, line });
+    else if (m[8]) out.push({ t: m[8], v: +m[9], dots: m[10].length, line });
+    else if (m[11]) out.push({ t: '^', len: m[12], dots: m[13].length, line });
+    else if (m[14]) out.push({ t: m[14], line });
+    else out.push({ t: ']', n: m[16], line });
+  }
+  return out;
+}
+
+function expand(toks) {
+  const st = [[]], open = [];
+  for (const t of toks) {
+    if (t.t === '[') { st.push([]); open.push(t.line); }
+    else if (t.t === ']') {
+      if (st.length < 2) throw new MMLError("']' に対応する '[' がありません", t.line);
+      const body = st.pop(), n = t.n ? +t.n : 2; open.pop();
+      if (n < 1 || n > 99) throw new MMLError('繰り返し回数は 1〜99 です', t.line);
+      for (let i = 0; i < n; i++) st[st.length - 1].push(...body);
+      if (st[0].length > 100000) throw new MMLError('展開後の長さが大きすぎます', t.line);
+    } else st[st.length - 1].push(t);
+  }
+  if (st.length > 1) throw new MMLError("'[' が閉じられていません", open[open.length - 1]);
+  return st[0];
+}
+
+function volLR(v, p) {
+  const amp = v / 15, ang = (p / 127) * Math.PI / 2;
+  const c = x => Math.max(0, Math.min(127, Math.round(127 * amp * x * Math.SQRT2)));
+  return [c(Math.cos(ang)), c(Math.sin(ang))];
+}
+
+function compileMML(src, samples) {
+  const meta = { title: 'Untitled', artist: '', game: '', echo: 30 };
+  let tempo0 = 120;
+  const body = Array.from({ length: 8 }, () => ({ text: '', lines: [] }));
+  src.split(/\r?\n/).forEach((raw, i) => {
+    const ln = i + 1, s = raw.replace(/;.*$/, '').trimEnd();
+    if (!s.trim()) return;
+    let m;
+    if ((m = s.match(/^\s*#(\w+)\s*(.*)$/))) {
+      const k = m[1].toLowerCase(), v = m[2].trim();
+      if (k === 'title' || k === 'artist' || k === 'game') meta[k] = v;
+      else if (k === 'tempo') tempo0 = Math.max(20, Math.min(400, +v || 120));
+      else if (k === 'echo') meta.echo = Math.max(0, Math.min(127, +v || 0));
+      else throw new MMLError(`不明な指示 #${m[1]}`, ln);
+    } else if ((m = s.match(/^\s*([A-H]+)(?:\s+(.*))?$/))) {
+      const t = (m[2] || '') + ' ';
+      for (const c of new Set(m[1])) {
+        const b = body[c.charCodeAt(0) - 65]; b.text += t;
+        for (let j = 0; j < t.length; j++) b.lines.push(ln);
+      }
+    } else throw new MMLError('行頭にチャンネル(A〜H)か #指示 が必要です', ln);
+  });
+
+  const tempos = [{ tick: 0, bpm: tempo0 }], used = [], chans = [];
+  const dur = (len, dots, def) => {
+    const b = len ? Math.round(WHOLE / +len) : def; let d = b, h = b;
+    for (let i = 0; i < dots; i++) { h /= 2; d += h; }
+    return Math.round(d);
+  };
+  body.forEach(b => {
+    let o = 4, l = WHOLE / 8, v = 12, p = 64, q = 8, smp = 0, k = 0, pos = 0, loop = -1, slur = false, last = null;
+    const notes = [];
+    for (const t of expand(tokenize(b.text, b.lines))) {
+      const E = m => { throw new MMLError(m, t.line); };
+      switch (t.t) {
+        case 'n': {
+          const d = dur(t.len, t.dots, l);
+          if (d < 1) E('音長が不正です');
+          let semi = SEMI[t.k]; for (const c of t.acc) semi += c === '-' ? -1 : 1;
+          const pitch = (o + 1) * 12 + semi + k;
+          if (pitch < 0 || pitch > 127) E('音程が範囲外です');
+          if (smp >= samples.length) E(`@${smp} のサンプルがありません`);
+          const prev = last && last !== 'r' ? last : null;
+          if (slur && prev && prev.start + prev.dur === pos) {
+            if (prev.pitch === pitch && prev.smp === smp) { prev.dur += d; pos += d; slur = false; break; }
+            if (prev.smp === smp) prev.legato = true;
+          }
+          if (!used.includes(smp)) used.push(smp);
+          const n = { start: pos, dur: d, pitch, v, p, q, smp, legato: false, fromLegato: !!(slur && prev && prev.legato) };
+          notes.push(n); last = n; pos += d; slur = false; break;
+        }
+        case 'r': pos += dur(t.len, t.dots, l); last = 'r'; slur = false; break;
+        case '^': { const d = dur(t.len, t.dots, l); if (!last) E("'^' の前に音符がありません"); if (last !== 'r') last.dur += d; pos += d; break; }
+        case 'l': if (t.v < 1 || t.v > 192) E('l は 1〜192 です'); l = dur(String(t.v), t.dots, 0); break;
+        case 'o': if (t.v < 0 || t.v > 9) E('o は 0〜9 です'); o = t.v; break;
+        case '<': o--; break;
+        case '>': o++; break;
+        case 't': if (t.v < 20 || t.v > 400) E('t は 20〜400 です'); tempos.push({ tick: pos, bpm: t.v }); break;
+        case 'v': if (t.v < 0 || t.v > 15) E('v は 0〜15 です'); v = t.v; break;
+        case 'p': if (t.v < 0 || t.v > 127) E('p は 0〜127 です'); p = t.v; break;
+        case 'q': if (t.v < 1 || t.v > 8) E('q は 1〜8 です'); q = t.v; break;
+        case '@': if (t.v < 0) E('@ は 0 以上です'); smp = t.v; break;
+        case 'k': k = t.v; break;
+        case '&': slur = true; break;
+        case 'L': if (loop < 0) loop = pos; break;
+        default: E(`不明なコマンド '${t.t}'`);
+      }
+    }
+    chans.push({ notes, end: pos, loop });
+  });
+  if (!used.length) throw new MMLError('音符がありません', 0);
+
+  tempos.sort((a, b) => a.tick - b.tick);
+  const tm = [];
+  for (const t of tempos) { if (tm.length && tm[tm.length - 1].tick === t.tick) tm[tm.length - 1] = { ...t }; else tm.push({ ...t }); }
+  tm.forEach((t, i) => { t.sec = i ? tm[i - 1].sec + (t.tick - tm[i - 1].tick) / PPQ * 60 / tm[i - 1].bpm : 0; });
+  const toSec = tk => { let i = tm.length - 1; while (tm[i].tick > tk) i--; return tm[i].sec + (tk - tm[i].tick) / PPQ * 60 / tm[i].bpm; };
+  const T = tk => Math.round(toSec(tk) * 1000 / TICK_MS);
+
+  const warn = new Set();
+  const itemsOf = notes => {
+    const it = []; let prevSkipped = false;
+    notes.forEach((n, i) => {
+      const nx = notes[i + 1], on = T(n.start), s = samples[n.smp];
+      const [vl, vr] = volLR(n.v, n.p), srcn = used.indexOf(n.smp);
+      const pitch = pitchForNote(n.pitch, s.root, s.fine);
+      let off = null, skip = n.legato;
+      if (!n.legato) {
+        off = Math.max(on + 2, T(n.start + Math.round(n.dur * n.q / 8)));
+        if (nx && T(nx.start) <= off) skip = true;
+      }
+      const sec = ((off === null ? T(n.start + n.dur) : off) - on) * TICK_MS / 1000;
+      if (!s.loop && sec * (pitch / 0x1000) > s.pcm.length / 32000 + 0.05) warn.add(n.smp);
+      it.push({ tick: on, koff: n.fromLegato ? 0 : (prevSkipped ? 1 : 0), mode: n.fromLegato ? 2 : 1, pitch, vl, vr, srcn });
+      if (!skip) it.push({ tick: off, koff: 1, mode: 0, pitch: 0, vl: 0, vr: 0, srcn: 0 });
+      prevSkipped = skip && !n.legato;
+    });
+    for (let i = 1; i < it.length; i++) if (it[i].tick <= it[i - 1].tick) it[i].tick = it[i - 1].tick + 1;
+    return it;
+  };
+
+  let G = 0;
+  const per = chans.map(c => {
+    const items = c.notes.length ? itemsOf(c.notes) : [];
+    G = Math.max(G, T(c.end), items.length ? items[items.length - 1].tick + 2 : 0);
+    return { items, loopT: -1 };
+  });
+  let minLoop = Infinity;
+  per.forEach((c, i) => {
+    const lp = chans[i].loop;
+    if (lp < 0 || !c.items.length) return;
+    const lt = T(lp), idx = c.items.findIndex(x => x.tick >= lt);
+    if (idx < 0) return;
+    if (lt >= 1 && !c.items.some(x => x.tick === lt - 1))
+      c.items.splice(idx, 0, { tick: lt - 1, koff: 0, mode: 0, pitch: 0, vl: 0, vr: 0, srcn: 0 });
+    c.loopT = lt; minLoop = Math.min(minLoop, lt);
+  });
+  const sec = x => x * TICK_MS / 1000, loops = minLoop < Infinity;
+  const seconds = loops ? Math.min(999, Math.max(120, sec(minLoop) + sec(G - minLoop) * 2)) : sec(G) + 2;
+  return { meta, per, used, G, loops, seconds, warn: [...warn] };
+}
+
+// イベント列: 8バイト/件 [待ち, pitchLo, koff(0/1/0xFE=ジャンプ/0xFF=終了), mode(0なし/1発音/2音量+ピッチ), volL, volR, pitchHi, srcn]
+function serialize(items, base, G, loopT) {
+  const out = [];
+  const push = (rem, it) => out.push(rem, it.pitch & 255, it.koff, it.mode, it.vl, it.vr, it.pitch >> 8, it.srcn);
+  const NOP = { pitch: 0, koff: 0, mode: 0, vl: 0, vr: 0, srcn: 0 };
+  let last = 0, tgt = -1;
+  const ai = loopT >= 0 ? items.findIndex(x => x.tick >= loopT) - 1 : -2;
+  if (ai === -1) tgt = 0;
+  const gap = to => { let r = Math.max(0, to - last - 1); while (r > 254) { push(254, NOP); r -= 255; } return r; };
+  items.forEach((it, i) => { push(gap(it.tick), it); last = it.tick; if (i === ai) tgt = out.length; });
+  if (tgt >= 0) push(gap(loopT >= 1 ? G - 1 : G), { ...NOP, pitch: base + tgt, koff: 0xFE });
+  else push(0, { ...NOP, koff: 0xFF });
+  return new Uint8Array(out);
+}
+
+function buildSpc(src) {
+  const c = compileMML(src, state.samples);
+  if (c.used.length > 64) throw new Error('使用サンプルは最大64個です');
+  const ram = new Uint8Array(0x10000);
+  const DIR = 0x0200, DRV = 0x0300, SBASE = 0x1000, LIMIT = 0xE000;
+  let cur = SBASE;
+  c.used.forEach((si, d) => {
+    const s = state.samples[si]; let bytes, lo = 0;
+    if (s.brrBytes) {
+      bytes = s.brrBytes.slice(); lo = s.loopOffset || 0;
+      const lb = bytes.length - 9; bytes[lb] = s.loop ? (bytes[lb] | 3) : ((bytes[lb] & ~2) | 1);
+    } else bytes = encodeBRR(s.pcm, s.loop).bytes;
+    if (cur + bytes.length > LIMIT) throw new Error('サンプルがSPC RAMに収まりません。サンプルを短くしてください');
+    ram.set(bytes, cur);
+    const ls = s.loop ? cur + lo : cur;
+    ram.set([cur & 255, cur >> 8, ls & 255, ls >> 8], DIR + d * 4);
+    cur += bytes.length;
+  });
+  const streamAddrs = [], streams = [];
+  c.per.forEach(ch => {
+    const st = serialize(ch.items, cur, c.G, ch.loopT);
+    if (cur + st.length > LIMIT) throw new Error('曲データがSPC RAMに収まりません。曲を短くしてください');
+    ram.set(st, cur); streamAddrs.push(cur); streams.push(st); cur += st.length;
+  });
+  const { bytes: drv, labels } = buildDriver(Assembler, {
+    origin: DRV, dirPage: DIR >> 8, srcn: [], streamAddrs, t0Target: TICK_MS * 8,
+    echo: c.meta.echo, firstDelays: streams.map(s => s[0]),
+  });
+  if (DRV + drv.length > SBASE) throw new Error('driver overflow');
+  ram.set(drv, DRV);
+  const dsp = new Uint8Array(128), e = c.meta.echo;
+  dsp[0x6C] = e ? 0 : 0x20; dsp[0x5D] = DIR >> 8; dsp[0x2C] = e; dsp[0x3C] = e;
+  dsp[0x0D] = 0x30; dsp[0x4D] = e ? 0xFF : 0; dsp[0x7D] = 0x03; dsp[0x6D] = 0xE0;
+  const spc = buildSpcFile({ ram, dsp, pc: labels.start, title: c.meta.title, artist: c.meta.artist, game: c.meta.game, seconds: c.seconds, fadeMs: c.loops ? 8000 : 0 });
+  return { spc, used: cur, warn: c.warn, title: c.meta.title, drvSize: drv.length };
+}
+
+// ===== UI =====
+const $ = s => document.querySelector(s);
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const noteName = n => NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1);
+
+const SAMPLE_MML = [
+  '; チャンネルは A〜H。@番号 で上のサンプル(BRR)を切り替えます',
+  '#title MML Demo',
+  '#tempo 120',
+  '#echo 30',
+  '',
+  'A v12 o4 l8 L @0 cdefgab>c< @1 ceg>c<gec r @2 [ge]4 @0 c1',
+  'B v10 o2 l4 L @1 [cgcg]4',
+  'C v6 o3 l1 L @0 e g e c',
+  ''
+].join('\n');
+
+function log(msg, kind) { const el = $('#status'); el.textContent = msg; el.className = 'status ' + (kind || ''); }
+function fail(e) {
+  log((e.line ? `${e.line}行目: ` : '') + (e.message || String(e)), 'err');
+  if (e.line) {
+    const ta = $('#mml'), ls = ta.value.split('\n'); let s = 0;
+    for (let i = 0; i < e.line - 1; i++) s += ls[i].length + 1;
+    ta.focus(); ta.setSelectionRange(s, s + (ls[e.line - 1] || '').length);
+  }
+}
+function warnText(w) { return w.length ? ` ※ ${w.map(i => '@' + i).join(',')} はループOFFのためサンプルより長い音が途中で止まります` : ''; }
+
+async function addSamples(files) {
+  for (const f of files) {
+    try {
+      const base = { loop: false, root: 60, fine: 0 };
+      if (f.name.toLowerCase().endsWith('.brr')) { const b = await parseBRRFile(f); state.samples.push({ ...base, ...b, loop: b.hasLoop }); }
+      else state.samples.push({ ...base, name: f.name, pcm: await decodeToPcm32k(f) });
+    } catch (e) { log(`${f.name} を読み込めませんでした: ${e.message || e}`, 'err'); }
+  }
+  renderSamples();
+}
+
+function renderSamples() {
+  const box = $('#sampleList'); box.innerHTML = '';
+  state.samples.forEach((s, i) => {
+    const row = document.createElement('div'); row.className = 'srow';
+    row.innerHTML = '<b class="idx">@' + i + '</b><span class="sname"></span>' +
+      '<label>基準ノート <input type="number" class="root" min="0" max="127"><span class="nn"></span></label>' +
+      '<label>微調整(cent) <input type="number" class="fine" min="-1200" max="1200"></label>' +
+      '<label><input type="checkbox" class="loop"> ループ</label><button class="pv">試聴</button><button class="rm">削除</button>';
+    row.querySelector('.sname').textContent = s.name;
+    const root = row.querySelector('.root'), nn = row.querySelector('.nn'), fine = row.querySelector('.fine'), lp = row.querySelector('.loop');
+    root.value = s.root; nn.textContent = noteName(s.root); fine.value = s.fine; lp.checked = s.loop;
+    root.oninput = () => { s.root = Math.max(0, Math.min(127, +root.value || 0)); nn.textContent = noteName(s.root); };
+    fine.oninput = () => { s.fine = +fine.value || 0; };
+    lp.onchange = () => { s.loop = lp.checked; };
+    row.querySelector('.pv').onclick = () => previewSample(i);
+    row.querySelector('.rm').onclick = () => { state.samples.splice(i, 1); renderSamples(); };
+    box.append(row);
+  });
+  if (!state.samples.length) box.innerHTML = '<p class="hint">サンプルがありません。上のボタンから追加してください。</p>';
+}
+
+function previewSong() {
+  stopPreview();
+  try {
+    const r = buildSpc($('#mml').value);
+    const player = getSpcPlayer();
+    if (!player) throw new Error('libspc.js が読み込まれていません');
+    player.load(r.spc.buffer.slice(r.spc.byteOffset, r.spc.byteOffset + r.spc.byteLength));
+    player.play();
+    log(`再生中 (RAM ${(r.used / 1024).toFixed(1)}KB)` + warnText(r.warn), r.warn.length ? 'err' : 'ok');
+  } catch (e) { fail(e); }
+}
+
+function build() {
+  try {
+    const r = buildSpc($('#mml').value);
+    const name = (r.title || 'song').replace(/[\\/:*?"<>|]/g, '_') + '.spc';
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([r.spc], { type: 'application/octet-stream' })); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    log(`${name} を書き出しました (RAM ${(r.used / 1024).toFixed(1)}KB)` + warnText(r.warn), r.warn.length ? 'err' : 'ok');
+  } catch (e) { fail(e); }
+}
+
+$('#sampleFile').onchange = async e => { await addSamples([...e.target.files]); e.target.value = ''; };
+$('#play').onclick = previewSong; $('#stop').onclick = stopPreview; $('#build').onclick = build;
+$('#mml').addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); previewSong(); } });
+$('#mml').value = SAMPLE_MML;
+renderSamples();
+</script>
+</body>
+</html>
